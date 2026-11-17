@@ -26,7 +26,7 @@ bb plugin update thread-resolved   # later releases in the same range
 - **What the model reads:** the whole thread (user turns, messages from bb and
   other threads, agent replies, commands run, tool calls, files changed; file
   reads and reasoning are left out), capped at 100k characters by cutting the
-  middle. It also gets each child thread and each thread the transcript
+  middle. It also gets the parent thread, each child thread and each thread the transcript
   mentions, with its state (running, idle, archived) and the end of its last
   reply.
 - **When it shows nothing:** while the thread works, waits on you, has queued

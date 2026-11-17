@@ -184,15 +184,19 @@ export default async function plugin(bb: BbPluginApi) {
     const previous = getRow.get(threadId);
     const children = await childIds(threadId);
     const previousMentions = z.array(z.string()).catch([]).parse(JSON.parse(previous?.mentioned_ids ?? "[]"));
-    const cheap = fingerprint(thread, await relatedStates([...new Set([...children, ...previousMentions])].slice(0, MAX_RELATED)));
+    const parent = thread.parentThreadId === null ? [] : [thread.parentThreadId];
+    const cheap = fingerprint(
+      thread,
+      await relatedStates([...new Set([...parent, ...children, ...previousMentions])].slice(0, MAX_RELATED)),
+    );
     if (!force && previous) {
       if (previous.fingerprint === cheap) return previous;
       if (previous.error_at !== null && Date.now() - previous.error_at < RETRY_AFTER_ERROR_MS) return previous;
     }
 
     const transcript = await readTranscript(threadId, signal);
-    const mentions = mentionedThreadIds(transcript, threadId).filter((id) => !children.includes(id));
-    const relatedIds = [...children, ...mentions].slice(0, MAX_RELATED);
+    const mentions = mentionedThreadIds(transcript, threadId).filter((id) => !children.includes(id) && !parent.includes(id));
+    const relatedIds = [...parent, ...children, ...mentions].slice(0, MAX_RELATED);
     const states = await relatedStates(relatedIds);
     const related: RelatedThread[] = await Promise.all(
       relatedIds.map(async (id) => {
@@ -200,7 +204,7 @@ export default async function plugin(bb: BbPluginApi) {
         const output = other ? (await bb.sdk.threads.output({ threadId: id, signal })).output : null;
         return {
           id,
-          relation: children.includes(id) ? "child" : "mentioned",
+          relation: parent.includes(id) ? "parent" : children.includes(id) ? "child" : "mentioned",
           title: other?.title ?? other?.titleFallback ?? "(unknown)",
           state: stateOf(other),
           lastOutput: output ? output.replace(/\s+/g, " ").slice(-600) : null,

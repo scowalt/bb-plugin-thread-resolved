@@ -6,7 +6,7 @@ export const QUESTION =
 
 export interface RelatedThread {
   id: string;
-  relation: "child" | "mentioned";
+  relation: "parent" | "child" | "mentioned";
   title: string;
   /** idle, active, error, … or "archived" / "deleted". */
   state: string;
@@ -27,7 +27,7 @@ Answer yes (resolved: true) only when one of these holds for every request the p
 - The request was a change (code, config, content, infrastructure, anything that ships), and the change landed in production and was verified to work there. Landed means merged to the main branch and deployed, released, published, or installed, whichever way the project ships. Verified means the agent or the person checked the live result (loaded the deployed page, ran the released version, saw the production deploy succeed and the change behave as asked).
 - The person dropped it, said it is fine as is, or said not to ship it.
 - It was handed to another thread (a child thread, a spawned thread, or another thread that took it over), and that thread is running or has finished. The list of related threads shows their current state.
-- This thread was started by another thread to do one part of a larger task (its first message comes from that thread), it did that part, and it reported back. Shipping the result is then the other thread's job.
+- This thread has a parent thread (a related thread marked parent) that started it for one part of a larger task, and this thread did that part and reported back. Shipping the result is then the parent's job. Without a parent, this rule does not apply.
 
 Answer no (resolved: false) when any of these holds:
 - A change is written but not in production: uncommitted, committed but not pushed, on a branch, in an open or draft pull request, merged but not yet deployed or released. Passing tests, lint, or a local or preview run do not count as production.

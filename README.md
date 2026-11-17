@@ -72,6 +72,14 @@ npm run check:git-install          # build as a git install does, without dev de
 bb plugin install . --yes
 ```
 
+Before changing the prompt in `src/judge.ts`, replay it on real threads. This
+re-judges each thread with this checkout's prompt and prints one JSON verdict
+per line, without touching stored verdicts:
+
+```sh
+bb thread-resolved list --json | jq -r '.[].threadId' | npx tsx scripts/replay.ts
+```
+
 ## Release
 
 ```sh

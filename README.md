@@ -9,6 +9,13 @@ When the answer is yes, the thread gets a green check in its sidebar row and a
 **Resolved** chip above the composer (click it for the model's one-line
 reason). When the answer is no, nothing changes.
 
+## Install
+
+```sh
+bb plugin install 'git:https://github.com/scowalt/bb-plugin-thread-resolved.git@^0.1.0'
+bb plugin update thread-resolved   # later releases in the same range
+```
+
 ## How it decides
 
 - **When it asks:** a few seconds after a thread goes idle, when one of its
@@ -49,7 +56,22 @@ bb thread-resolved check <thread-id> [--json]  # ask again now
 ## Develop
 
 ```sh
-npm install --include=dev
-npm test && npm run typecheck
-bb plugin build . && bb plugin install . --yes
+npm ci
+npm run check                      # typecheck, tests, bb plugin build
+bb plugin install . --yes
 ```
+
+## Release
+
+```sh
+npm version patch                  # bumps package.json, commits, tags vX.Y.Z
+git push --follow-tags
+```
+
+The Release workflow checks the tag matches `package.json`, runs `npm run
+check`, and publishes a GitHub release. bb installs from the tag itself, so
+never move a published tag; ship a fix as a new version.
+
+## License
+
+MIT

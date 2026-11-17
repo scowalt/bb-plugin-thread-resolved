@@ -1,0 +1,39 @@
+name: Release
+
+# Push a vX.Y.Z tag (`npm version patch && git push --follow-tags`) to publish.
+# bb installs releases from these tags: git:https://github.com/scowalt/bb-plugin-thread-resolved.git@^0.1.0
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Tag matches package.json version
+        run: |
+          version="v$(node -p 'require("./package.json").version')"
+          if [ "$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $version"
+            exit 1
+          fi
+      - run: npm ci
+      - name: Typecheck, test and build
+        run: npm run check
+      - name: Package the built plugin
+        run: tar -czf "thread-resolved-$GITHUB_REF_NAME.tgz" package.json README.md LICENSE skills dist
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "thread-resolved-$GITHUB_REF_NAME.tgz" \
+            --title "$GITHUB_REF_NAME" --generate-notes \
+            --notes "Install or update in bb: \`bb plugin install 'git:https://github.com/scowalt/bb-plugin-thread-resolved.git@^${GITHUB_REF_NAME#v}'\`"

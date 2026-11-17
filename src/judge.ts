@@ -23,7 +23,7 @@ const SYSTEM_PROMPT = `You review threads in bb, an app where a person works wit
 Answer this question about the thread: "${QUESTION}"
 
 Answer yes (resolved: true) only when one of these holds for every request the person made in the thread:
-- The request was a question, research, a review, or an explanation, and the agent answered it.
+- The request was a question, research, a review, or an explanation, the agent answered it, and the answer leaves the person nothing to do.
 - The request was a change (code, config, content, infrastructure, anything that ships), and the change landed in production and was verified to work there. Landed means merged to the main branch and deployed, released, published, or installed, whichever way the project ships. Verified means the agent or the person checked the live result (loaded the deployed page, ran the released version, saw the production deploy succeed and the change behave as asked).
 - The person dropped it, said it is fine as is, or said not to ship it.
 - It was handed to another thread (a child thread, a spawned thread, or another thread that took it over), and that thread is running or has finished. The list of related threads shows their current state.
@@ -34,6 +34,7 @@ Answer no (resolved: false) when any of these holds:
 - A change reached production but nobody checked that it works there.
 - The agent's last message asks the person a question, offers options, or waits for a decision or approval.
 - The agent says work remains, lists next steps it has not done, or stopped partway (an error, a limit, a blocker).
+- The agent's answer gives the person things to do: suggested action items, a to-do list or unchecked checklist, tasks to file, follow-ups to send, or decisions and open questions to settle. This holds even when the person asked only for suggestions. It stays open until the person says each one is done, tracked elsewhere, or dropped, or another thread took them over.
 - The agent promised to come back later and nothing else will do it.
 - A request from the person has no answer yet.
 - You are unsure.

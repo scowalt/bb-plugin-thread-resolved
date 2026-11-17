@@ -32,7 +32,9 @@ bb plugin update thread-resolved   # later releases in the same range
 - **When it shows nothing:** while the thread works, waits on you, has queued
   messages, or failed. A new turn clears the check at once.
 - **What counts as done:** an answered question, review or piece of research
-  is done. A change is done only once it is in production (merged and
+  is done, unless the answer hands you action items, a to-do list, decisions
+  or open questions; those keep the thread open until you say each is done,
+  tracked elsewhere or dropped. A change is done only once it is in production (merged and
   deployed, released, published or installed) and someone checked it works
   there. Written, tested, committed, pushed or in a pull request is not done.
   A thread another thread started for one part of a task is done once it

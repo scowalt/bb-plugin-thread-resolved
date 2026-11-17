@@ -8,7 +8,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { VERDICTS_CHANGED } from "./src/channels";
 import { rpcContract, type ResolvedThread } from "./src/contract";
-import { askModel, buildPrompt, ModelError, type ModelConfig, type RelatedThread } from "./src/judge";
+import { askModel, buildPrompt, ModelError, PROMPT_VERSION, type ModelConfig, type RelatedThread } from "./src/judge";
 import {
   buildTranscript,
   eventToEntry,
@@ -136,7 +136,7 @@ export default async function plugin(bb: BbPluginApi) {
   }
   function fingerprint(thread: ListedThread, related: Map<string, ListedThread | null>): string {
     const parts = [...related].sort(([a], [b]) => a.localeCompare(b)).map(([id, t]) => `${id}=${stateOf(t)}`);
-    return [String(thread.updatedAt), ...parts].join("|");
+    return [PROMPT_VERSION, String(thread.updatedAt), ...parts].join("|");
   }
 
   async function childIds(threadId: string): Promise<string[]> {

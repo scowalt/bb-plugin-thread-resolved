@@ -31,7 +31,15 @@ bb plugin update thread-resolved   # later releases in the same range
   reply.
 - **When it shows nothing:** while the thread works, waits on you, has queued
   messages, or failed. A new turn clears the check at once.
+- **What counts as done:** an answered question, review or piece of research
+  is done. A change is done only once it is in production (merged and
+  deployed, released, published or installed) and someone checked it works
+  there. Written, tested, committed, pushed or in a pull request is not done.
+  A thread another thread started for one part of a task is done once it
+  reports back; shipping is the starting thread's job.
 - **Unsure means no.** The prompt tells the model to answer no when unsure.
+- **New prompt, new answers.** Every stored verdict carries a hash of the
+  prompt, so a release that changes the prompt re-judges each thread once.
 
 ## Model
 

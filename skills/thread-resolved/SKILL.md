@@ -11,6 +11,10 @@ by another thread?". Threads judged yes get a checkmark in the sidebar row and
 a **Resolved** chip beside the composer. Working threads, threads waiting on
 the person, and failed threads show nothing.
 
+A change counts as done only once it is in production and checked there;
+written, committed or in a pull request is not done. A thread another thread
+started for one part of a task is done once it reports back.
+
 ```sh
 bb thread-resolved list [--json]               # threads judged resolved, with the reason
 bb thread-resolved status <thread-id> [--json] # the stored verdict, reason and last error

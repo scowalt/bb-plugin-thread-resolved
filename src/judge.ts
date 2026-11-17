@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 
 export const QUESTION =
@@ -22,11 +23,15 @@ const SYSTEM_PROMPT = `You review threads in bb, an app where a person works wit
 Answer this question about the thread: "${QUESTION}"
 
 Answer yes (resolved: true) only when one of these holds for every request the person made in the thread:
-- The agent finished it and reported the result, and nothing is waiting on the person.
-- The person dropped it, or said it is fine as is.
+- The request was a question, research, a review, or an explanation, and the agent answered it.
+- The request was a change (code, config, content, infrastructure, anything that ships), and the change landed in production and was verified to work there. Landed means merged to the main branch and deployed, released, published, or installed, whichever way the project ships. Verified means the agent or the person checked the live result (loaded the deployed page, ran the released version, saw the production deploy succeed and the change behave as asked).
+- The person dropped it, said it is fine as is, or said not to ship it.
 - It was handed to another thread (a child thread, a spawned thread, or another thread that took it over), and that thread is running or has finished. The list of related threads shows their current state.
+- This thread was started by another thread to do one part of a larger task (its first message comes from that thread), it did that part, and it reported back. Shipping the result is then the other thread's job.
 
 Answer no (resolved: false) when any of these holds:
+- A change is written but not in production: uncommitted, committed but not pushed, on a branch, in an open or draft pull request, merged but not yet deployed or released. Passing tests, lint, or a local or preview run do not count as production.
+- A change reached production but nobody checked that it works there.
 - The agent's last message asks the person a question, offers options, or waits for a decision or approval.
 - The agent says work remains, lists next steps it has not done, or stopped partway (an error, a limit, a blocker).
 - The agent promised to come back later and nothing else will do it.
@@ -34,6 +39,9 @@ Answer no (resolved: false) when any of these holds:
 - You are unsure.
 
 Reply with only a JSON object, no other text: {"resolved": true or false, "reason": "<one short sentence, at most 20 words, naming what is done or what is still open>"}`;
+
+/** Changes whenever the prompt does, so stored verdicts from an older prompt are judged again. */
+export const PROMPT_VERSION = createHash("sha256").update(SYSTEM_PROMPT).digest("hex").slice(0, 12);
 
 export function buildPrompt(input: {
   title: string;

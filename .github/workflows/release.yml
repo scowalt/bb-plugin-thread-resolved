@@ -28,6 +28,8 @@ jobs:
       - run: npm ci
       - name: Typecheck, test and build
         run: npm run check
+      - name: Build the way `bb plugin install git:` does (no dev dependencies)
+        run: npm run check:git-install
       - name: Package the built plugin
         run: tar -czf "thread-resolved-$GITHUB_REF_NAME.tgz" package.json README.md LICENSE skills dist
       - name: Publish the GitHub release

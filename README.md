@@ -58,6 +58,7 @@ bb thread-resolved check <thread-id> [--json]  # ask again now
 ```sh
 npm ci
 npm run check                      # typecheck, tests, bb plugin build
+npm run check:git-install          # build as a git install does, without dev dependencies
 bb plugin install . --yes
 ```
 

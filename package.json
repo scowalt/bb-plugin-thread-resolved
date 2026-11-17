@@ -52,7 +52,8 @@
     "build": "bb plugin build .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "npm run typecheck && npm test && npm run build"
+    "check": "npm run typecheck && npm test && npm run build",
+    "check:git-install": "scripts/git-install-build.sh"
   },
   "license": "MIT",
   "repository": {

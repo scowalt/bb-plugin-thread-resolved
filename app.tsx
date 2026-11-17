@@ -1,22 +1,32 @@
 // Thread Resolved: a checkmark on threads the server judged resolved, in the
 // sidebar row and beside the thread's composer. Unresolved threads show nothing.
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   definePluginApp,
   experimental_Icon as Icon,
-  experimental_useRpcQuery as useRpcQuery,
   useRealtime,
+  useRpc,
   type ExperimentalThreadContextSegmentProps,
   type PluginContentScriptContext,
 } from "@get-bb/plugin-sdk/app";
-import { rpcContract, VERDICTS_CHANGED, type ResolvedThread } from "./src/contract";
+// Types only: git installs build without dev dependencies, so the frontend
+// bundle cannot import the SDK root (or zod) through the contract module.
+import { VERDICTS_CHANGED } from "./src/channels";
+import type { ResolvedThread, rpcContract } from "./src/contract";
 
 /** Resolved threads by id, refetched whenever the server's verdicts change. */
 function useResolvedThreads(): ReadonlyMap<string, ResolvedThread> {
-  const query = useRpcQuery({ contract: rpcContract, method: "resolved_list", input: null });
-  useRealtime(VERDICTS_CHANGED, () => void query.refetch());
-  const threads = query.data?.threads;
-  return useMemo(() => new Map((threads ?? []).map((thread) => [thread.threadId, thread])), [threads]);
+  const rpc = useRpc<typeof rpcContract>();
+  const [threads, setThreads] = useState<readonly ResolvedThread[]>([]);
+  const refetch = useCallback(() => {
+    rpc.call("resolved_list").then(
+      (result) => setThreads(result.threads),
+      () => {},
+    );
+  }, [rpc]);
+  useEffect(refetch, [refetch]);
+  useRealtime(VERDICTS_CHANGED, refetch);
+  return useMemo(() => new Map(threads.map((thread) => [thread.threadId, thread])), [threads]);
 }
 
 // Only a content script may set sidebar row statuses, and only a React slot

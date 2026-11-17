@@ -14,6 +14,3 @@ export const rpcContract = defineRpcContract({
     output: z.object({ threads: z.array(resolvedThreadSchema) }),
   },
 });
-
-/** Realtime channel the server publishes on whenever a verdict changes. */
-export const VERDICTS_CHANGED = "verdicts-changed";

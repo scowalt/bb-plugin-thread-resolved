@@ -20,3 +20,5 @@ jobs:
       - run: npm ci
       - name: Typecheck, test and build
         run: npm run check
+      - name: Build the way `bb plugin install git:` does (no dev dependencies)
+        run: npm run check:git-install

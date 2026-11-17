@@ -6,7 +6,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { rpcContract, VERDICTS_CHANGED, type ResolvedThread } from "./src/contract";
+import { VERDICTS_CHANGED } from "./src/channels";
+import { rpcContract, type ResolvedThread } from "./src/contract";
 import { askModel, buildPrompt, ModelError, type ModelConfig, type RelatedThread } from "./src/judge";
 import {
   buildTranscript,

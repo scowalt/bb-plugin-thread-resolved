@@ -1,6 +1,6 @@
-// Thread Resolved: asks a small model whether each idle thread's work is
-// resolved or picked up by another thread, and publishes the threads where
-// the answer is yes so the app can draw a checkmark on them.
+// Thread Resolved: asks a decision model how likely it is that each idle
+// thread's work is resolved or picked up by another thread, and publishes the
+// threads above the threshold so the app can draw a checkmark on them.
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +8,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { VERDICTS_CHANGED } from "./src/channels";
 import { rpcContract, type ResolvedThread } from "./src/contract";
-import { askModel, buildPrompt, ModelError, PROMPT_VERSION, type ModelConfig, type RelatedThread } from "./src/judge";
+import { askConfidence, buildState, ModelError, PROMPT_VERSION, type ModelConfig, type RelatedThread } from "./src/judge";
 import {
   buildTranscript,
   eventToEntry,
@@ -23,14 +23,16 @@ const MAX_PARALLEL_CHECKS = 2;
 const MAX_RELATED = 25;
 const RETRY_AFTER_ERROR_MS = 10 * 60_000;
 const PAUSE_AFTER_RATE_LIMIT_MS = 5 * 60_000;
-const TRANSCRIPT_BUDGET = 100_000;
+// The decision model reads at most 32k tokens; a thread too long at one
+// budget is retried at the next.
+const TRANSCRIPT_BUDGETS = [60_000, 30_000, 15_000];
 const EVENT_PAGE = 100;
 
 interface VerdictRow {
   thread_id: string;
   fingerprint: string;
-  resolved: number;
-  reason: string;
+  /** The probability that the thread is resolved; null when there is no current verdict. */
+  confidence: number | null;
   checked_at: number;
   mentioned_ids: string;
   error: string | null;
@@ -41,17 +43,18 @@ type ListedThread = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["list"]>>[n
 
 export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({
-    model: {
+    decisionModel: {
       type: "string",
-      label: "Model",
-      description: "OpenCode model id that answers the question, such as hy4-flash-free or beam-free.",
-      default: "hy4-flash-free",
+      label: "Decision model",
+      description: "OpenCode decision model id: jev-1.13-free, jev-1.13, gpt-6-luna-decision or gemini-decision-1.",
+      default: "jev-1.13-free",
     },
-    baseUrl: {
-      type: "string",
-      label: "API base URL",
-      description: "OpenAI-compatible endpoint. OpenCode Go is https://opencode.ai/zen/go/v1; Zen is https://opencode.ai/zen/v1.",
-      default: "https://opencode.ai/zen/go/v1",
+    threshold: {
+      type: "number",
+      label: "Resolved at confidence",
+      description: "A thread shows as resolved when the model's confidence is at least this, from 0 to 1.",
+      experimental_schema: z.number().min(0).max(1),
+      default: 0.7,
     },
     apiKey: {
       type: "string",
@@ -79,23 +82,34 @@ export default async function plugin(bb: BbPluginApi) {
       error TEXT,
       error_at INTEGER
     )`,
+    "DROP TABLE verdicts",
+    `CREATE TABLE verdicts (
+      thread_id TEXT PRIMARY KEY,
+      fingerprint TEXT NOT NULL,
+      confidence REAL,
+      checked_at INTEGER NOT NULL,
+      mentioned_ids TEXT NOT NULL DEFAULT '[]',
+      error TEXT,
+      error_at INTEGER
+    )`,
   ]);
   const getRow = db.prepare<[string], VerdictRow>("SELECT * FROM verdicts WHERE thread_id = ?");
   const upsertRow = db.prepare(
-    `INSERT INTO verdicts (thread_id, fingerprint, resolved, reason, checked_at, mentioned_ids, error, error_at)
-     VALUES (@thread_id, @fingerprint, @resolved, @reason, @checked_at, @mentioned_ids, NULL, NULL)
-     ON CONFLICT(thread_id) DO UPDATE SET fingerprint = excluded.fingerprint, resolved = excluded.resolved,
-       reason = excluded.reason, checked_at = excluded.checked_at, mentioned_ids = excluded.mentioned_ids,
-       error = NULL, error_at = NULL`,
+    `INSERT INTO verdicts (thread_id, fingerprint, confidence, checked_at, mentioned_ids, error, error_at)
+     VALUES (@thread_id, @fingerprint, @confidence, @checked_at, @mentioned_ids, NULL, NULL)
+     ON CONFLICT(thread_id) DO UPDATE SET fingerprint = excluded.fingerprint, confidence = excluded.confidence,
+       checked_at = excluded.checked_at, mentioned_ids = excluded.mentioned_ids, error = NULL, error_at = NULL`,
   );
   const recordError = db.prepare(
-    `INSERT INTO verdicts (thread_id, fingerprint, resolved, reason, checked_at, error, error_at)
-     VALUES (?, '', 0, '', 0, ?, ?)
+    `INSERT INTO verdicts (thread_id, fingerprint, confidence, checked_at, error, error_at)
+     VALUES (?, '', NULL, 0, ?, ?)
      ON CONFLICT(thread_id) DO UPDATE SET error = excluded.error, error_at = excluded.error_at`,
   );
-  const unresolve = db.prepare("UPDATE verdicts SET resolved = 0, fingerprint = '' WHERE thread_id = ? AND resolved = 1");
+  const unresolve = db.prepare(
+    "UPDATE verdicts SET confidence = NULL, fingerprint = '' WHERE thread_id = ? AND confidence IS NOT NULL",
+  );
   const deleteRow = db.prepare("DELETE FROM verdicts WHERE thread_id = ?");
-  const listResolved = db.prepare<[], VerdictRow>("SELECT * FROM verdicts WHERE resolved = 1");
+  const listResolved = db.prepare<[number], VerdictRow>("SELECT * FROM verdicts WHERE confidence >= ?");
 
   const changed = () => bb.realtime.publish(VERDICTS_CHANGED, null);
 
@@ -118,18 +132,18 @@ export default async function plugin(bb: BbPluginApi) {
     setJudging(threadId, false);
     const row = getRow.get(threadId);
     deleteRow.run(threadId);
-    if (row?.resolved) changed();
+    if (row?.confidence != null) changed();
   }
 
   async function modelConfig(): Promise<ModelConfig> {
-    const { model, baseUrl, apiKey } = await settings.get();
-    if (apiKey) return { model, baseUrl, apiKey };
+    const { decisionModel: model, apiKey } = await settings.get();
+    if (apiKey) return { model, apiKey };
     const auth = z
       .record(z.string(), z.object({ key: z.string().optional() }))
       .parse(JSON.parse(await readFile(join(homedir(), ".local/share/opencode/auth.json"), "utf8")));
-    const key = (baseUrl.includes("/zen/go") ? auth["opencode-go"] : auth.opencode)?.key;
+    const key = auth.opencode?.key ?? auth["opencode-go"]?.key;
     if (!key) throw new Error("No API key: set apiKey, or log in to OpenCode with `opencode auth login`.");
-    return { model, baseUrl, apiKey: key };
+    return { model, apiKey: key };
   }
 
   async function listThreads(ids: readonly string[], archived: boolean): Promise<ListedThread[]> {
@@ -161,7 +175,7 @@ export default async function plugin(bb: BbPluginApi) {
     return threads[0]?.descendantIds ?? [];
   }
 
-  async function readTranscript(threadId: string, signal: AbortSignal): Promise<string> {
+  async function readEntries(threadId: string, signal: AbortSignal): Promise<string[]> {
     const entries: string[] = [];
     let afterSeq: number | undefined;
     for (;;) {
@@ -180,7 +194,24 @@ export default async function plugin(bb: BbPluginApi) {
       if (page.length < EVENT_PAGE) break;
       afterSeq = page[page.length - 1]?.seq;
     }
-    return buildTranscript(entries, TRANSCRIPT_BUDGET);
+    return entries;
+  }
+
+  /** The confidence for the longest transcript the model accepts. */
+  async function askAtBudgets(
+    entries: readonly string[],
+    stateFor: (transcript: string) => string,
+    signal: AbortSignal,
+  ): Promise<number> {
+    const config = await modelConfig();
+    for (const [index, budget] of TRANSCRIPT_BUDGETS.entries()) {
+      try {
+        return await askConfidence(config, stateFor(buildTranscript(entries, budget)), signal);
+      } catch (error) {
+        if (!(error instanceof ModelError && error.tooLong) || index === TRANSCRIPT_BUDGETS.length - 1) throw error;
+      }
+    }
+    throw new Error("unreachable");
   }
 
   /** Re-judge one thread when it or a related thread changed since the last verdict. */
@@ -216,8 +247,8 @@ export default async function plugin(bb: BbPluginApi) {
     }
     setJudging(threadId, true);
 
-    const transcript = await readTranscript(threadId, signal);
-    const mentions = mentionedThreadIds(transcript, threadId).filter((id) => !children.includes(id) && !parent.includes(id));
+    const entries = await readEntries(threadId, signal);
+    const mentions = mentionedThreadIds(buildTranscript(entries, TRANSCRIPT_BUDGETS[0]!), threadId).filter((id) => !children.includes(id) && !parent.includes(id));
     const relatedIds = [...parent, ...children, ...mentions].slice(0, MAX_RELATED);
     const states = await relatedStates(relatedIds);
     const related: RelatedThread[] = await Promise.all(
@@ -233,21 +264,19 @@ export default async function plugin(bb: BbPluginApi) {
         } satisfies RelatedThread;
       }),
     );
-    const prompt = buildPrompt({ title: thread.title ?? thread.titleFallback ?? "(untitled)", transcript, related });
+    const title = thread.title ?? thread.titleFallback ?? "(untitled)";
 
     try {
-      const verdict = await askModel(await modelConfig(), prompt, `thread-resolved-${threadId}`, signal);
-      const row = {
+      const confidence = await askAtBudgets(entries, (transcript) => buildState({ title, transcript, related }), signal);
+      upsertRow.run({
         thread_id: threadId,
         fingerprint: fingerprint(thread, states),
-        resolved: verdict.resolved ? 1 : 0,
-        reason: verdict.reason,
+        confidence,
         checked_at: Date.now(),
         mentioned_ids: JSON.stringify(mentions.filter((id) => relatedIds.includes(id))),
-      };
-      upsertRow.run(row);
-      if (Boolean(previous?.resolved) !== verdict.resolved || verdict.resolved) changed();
-      bb.log.info(`judged ${threadId}: ${verdict.resolved ? "resolved" : "open"} (${verdict.reason})`);
+      });
+      changed();
+      bb.log.info(`judged ${threadId}: ${Math.round(confidence * 100)}% resolved`);
       return getRow.get(threadId) ?? null;
     } catch (error) {
       if (signal.aborted) throw error;
@@ -347,12 +376,15 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  function resolvedThreads(): ResolvedThread[] {
-    return listResolved.all().map((row) => ({ threadId: row.thread_id, reason: row.reason, checkedAt: row.checked_at }));
+  async function resolvedThreads(): Promise<ResolvedThread[]> {
+    const { threshold } = await settings.get();
+    return listResolved
+      .all(threshold)
+      .map((row) => ({ threadId: row.thread_id, confidence: row.confidence ?? 0, checkedAt: row.checked_at }));
   }
 
   bb.rpc.register(rpcContract, {
-    resolved_list: () => ({ threads: resolvedThreads(), judging: [...judging] }),
+    resolved_list: async () => ({ threads: await resolvedThreads(), judging: [...judging] }),
   });
 
   const usage = [
@@ -362,13 +394,14 @@ export default async function plugin(bb: BbPluginApi) {
     "  bb thread-resolved status <thread-id> [--json]  The stored verdict for a thread",
     "  bb thread-resolved check <thread-id> [--json]   Ask the model now, ignoring the cache",
   ].join("\n");
-  function describe(row: VerdictRow | null | undefined): Record<string, unknown> {
+  async function describe(row: VerdictRow | null | undefined): Promise<Record<string, unknown>> {
     if (!row) return { verdict: "none" };
+    const { threshold } = await settings.get();
     return {
       threadId: row.thread_id,
       judging: judging.has(row.thread_id),
-      resolved: row.resolved === 1,
-      reason: row.reason,
+      resolved: row.confidence !== null && row.confidence >= threshold,
+      confidence: row.confidence,
       checkedAt: row.checked_at ? new Date(row.checked_at).toISOString() : null,
       error: row.error,
     };
@@ -389,11 +422,11 @@ export default async function plugin(bb: BbPluginApi) {
         exitCode: 0,
         stdout: json ? JSON.stringify(value) : JSON.stringify(value, null, 2),
       });
-      if (command === "list" && threadId === undefined) return reply(resolvedThreads());
+      if (command === "list" && threadId === undefined) return reply(await resolvedThreads());
       if (command === "judging" && threadId === undefined) return reply([...judging]);
       if (threadId !== undefined && rest.length === 0) {
-        if (command === "status") return reply(describe(getRow.get(threadId)));
-        if (command === "check") return reply(describe(await check(threadId, stopping.signal, true)));
+        if (command === "status") return reply(await describe(getRow.get(threadId)));
+        if (command === "check") return reply(await describe(await check(threadId, stopping.signal, true)));
       }
       return { exitCode: command === undefined || command === "help" ? 0 : 1, stdout: usage };
     },

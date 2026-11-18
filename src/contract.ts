@@ -3,7 +3,8 @@ import { z } from "zod";
 
 const resolvedThreadSchema = z.object({
   threadId: z.string(),
-  reason: z.string(),
+  /** The probability, from 0 to 1, that the thread's work is resolved. */
+  confidence: z.number(),
   checkedAt: z.number(),
 });
 export type ResolvedThread = z.infer<typeof resolvedThreadSchema>;

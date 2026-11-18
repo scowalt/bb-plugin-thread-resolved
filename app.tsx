@@ -41,6 +41,7 @@ function useVerdicts(): ReadonlyMap<string, Verdict> {
 }
 
 const JUDGING_LABEL = "Checking whether this thread is resolved";
+const percent = (confidence: number) => `${Math.round(confidence * 100)}%`;
 
 // Only a content script may set sidebar row statuses, and only a React slot
 // may read RPC, so the script hands its setter to the overlay below.
@@ -68,7 +69,7 @@ function SidebarCheckmarks() {
       setter(
         threadId,
         verdict.kind === "resolved"
-          ? { icon: "CircleCheck", label: `Resolved: ${verdict.thread.reason}`, tone: "success" }
+          ? { icon: "CircleCheck", label: `Resolved (${percent(verdict.thread.confidence)} confident)`, tone: "success" }
           : { icon: "Loading", label: JUDGING_LABEL },
       );
     }
@@ -99,11 +100,12 @@ function ResolvedChip({ threadId, isExpanded, onToggle }: ExperimentalThreadCont
       type="button"
       onClick={onToggle}
       aria-expanded={isExpanded}
-      title={thread.reason}
+      title={`${percent(thread.confidence)} confident`}
       className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-xs text-success hover:bg-state-hover"
     >
       <Icon name="CircleCheck" className="size-3.5" />
       Resolved
+      <span className="opacity-70">{percent(thread.confidence)}</span>
     </button>
   );
 }
@@ -114,7 +116,7 @@ function ResolvedDetails({ threadId, isExpanded }: ExperimentalThreadContextSegm
   const { thread } = verdict;
   return (
     <p className="px-1.5 pt-1 pb-1 text-xs text-muted-foreground">
-      {thread.reason}{" "}
+      {percent(thread.confidence)} confident{" "}
       <span className="opacity-70">· checked {new Date(thread.checkedAt).toLocaleTimeString()}</span>
     </p>
   );

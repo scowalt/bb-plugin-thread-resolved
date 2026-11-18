@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { parseVerdict } from "./judge";
 import { buildTranscript, eventToEntry, mentionedThreadIds } from "./transcript";
 
 describe("eventToEntry", () => {
@@ -41,17 +40,5 @@ describe("mentionedThreadIds", () => {
       "thr_aaaaaa1",
       "thr_bbbbbb2",
     ]);
-  });
-});
-
-describe("parseVerdict", () => {
-  it("reads the last JSON object, ignoring think blocks and fences", () => {
-    expect(
-      parseVerdict('<think>{"resolved": true, "reason": "x"}</think>```json\n{"resolved": false, "reason": "Asks which option."}\n```'),
-    ).toEqual({ resolved: false, reason: "Asks which option." });
-  });
-
-  it("refuses a reply without a verdict", () => {
-    expect(() => parseVerdict("yes")).toThrow(/no verdict/);
   });
 });

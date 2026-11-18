@@ -1,5 +1,5 @@
-// Re-judges threads with the judge prompt in this checkout, to see how a prompt
-// change moves verdicts before it ships. Prints one JSON line per thread.
+// Re-judges threads with the question in this checkout, to see how a question
+// change moves confidences before it ships. Prints one JSON line per thread.
 //
 //   bb thread-resolved list --json | jq -r '.[].threadId' | npx tsx scripts/replay.ts
 //   npx tsx scripts/replay.ts thr_abc123 thr_def456
@@ -8,11 +8,11 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { askModel, buildPrompt, PROMPT_VERSION, type RelatedThread } from "../src/judge.ts";
+import { askConfidence, buildState, PROMPT_VERSION, type RelatedThread } from "../src/judge.ts";
 import { buildTranscript, eventToEntry, mentionedThreadIds, type RawEvent } from "../src/transcript.ts";
 
 const exec = promisify(execFile);
-const TRANSCRIPT_BUDGET = 100_000;
+const TRANSCRIPT_BUDGET = 60_000;
 const PARALLEL = 2;
 
 async function bb<T>(...args: string[]): Promise<T> {
@@ -30,11 +30,10 @@ async function show(id: string): Promise<ShownThread["thread"] | null> {
 
 async function config() {
   const settings = await bb<{ values?: Record<string, unknown> }>("plugin", "config", "thread-resolved").catch(() => ({ values: {} }));
-  const model = String(settings.values?.model ?? "hy4-flash-free");
-  const baseUrl = String(settings.values?.baseUrl ?? "https://opencode.ai/zen/go/v1");
+  const model = String(settings.values?.decisionModel ?? "jev-1.13-free");
   const auth = JSON.parse(await readFile(join(homedir(), ".local/share/opencode/auth.json"), "utf8"));
-  const apiKey: string = (baseUrl.includes("/zen/go") ? auth["opencode-go"] : auth.opencode).key;
-  return { model, baseUrl, apiKey };
+  const apiKey: string = (auth.opencode ?? auth["opencode-go"]).key;
+  return { model, apiKey };
 }
 
 async function judge(id: string, children: Map<string, string[]>, model: Awaited<ReturnType<typeof config>>) {
@@ -59,9 +58,9 @@ async function judge(id: string, children: Map<string, string[]>, model: Awaited
       } satisfies RelatedThread;
     }),
   );
-  const prompt = buildPrompt({ title: thread.title ?? thread.titleFallback ?? "(untitled)", transcript, related });
-  const verdict = await askModel(model, prompt, `thread-resolved-replay-${id}`, AbortSignal.timeout(300_000));
-  return { id, title: thread.title, prompt: PROMPT_VERSION, ...verdict };
+  const state = buildState({ title: thread.title ?? thread.titleFallback ?? "(untitled)", transcript, related });
+  const confidence = await askConfidence(model, state, AbortSignal.timeout(60_000));
+  return { id, title: thread.title, prompt: PROMPT_VERSION, confidence };
 }
 
 const fromStdin = process.stdin.isTTY ? "" : await new Response(process.stdin as unknown as ReadableStream).text();

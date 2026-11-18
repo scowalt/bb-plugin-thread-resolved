@@ -14,9 +14,7 @@ function holdModel() {
         new Promise<Response>((resolve) => {
           answer = (resolved) =>
             resolve(
-              Response.json({
-                choices: [{ message: { content: JSON.stringify({ resolved, reason: "test reason" }) } }],
-              }),
+              Response.json({ answers: { resolved: { type: "noul", noul: resolved ? 0.9 : 0.1 } } }),
             );
         }),
     ),
@@ -24,7 +22,7 @@ function holdModel() {
   return { answer: (resolved: boolean) => answer(resolved) };
 }
 
-async function start() {
+async function start(events: object[] = []) {
   const thread = makeThreadResponse({ id: THREAD, status: "idle", updatedAt: Date.now() });
   const { bb, harness } = createFakePluginHost({
     pluginId: "thread-resolved",
@@ -33,7 +31,7 @@ async function start() {
       threads: {
         list: () => [{ ...thread, hasPendingInteraction: false, queuedWork: "none" }],
         experimental_listDescendants: () => ({ threads: [{ threadId: THREAD, descendantIds: [] }] }),
-        events: { list: () => [] },
+        events: { list: () => events },
         output: () => ({ output: null }),
       },
     },
@@ -103,5 +101,34 @@ describe("judging state", () => {
     await vi.advanceTimersByTimeAsync(3_000);
     await vi.waitFor(async () => expect(await judging()).toEqual([]));
     expect(fetch).toHaveBeenCalledOnce();
+  });
+});
+
+describe("long threads", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("retries with a shorter transcript when the model refuses the length", async () => {
+    const states: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        states.push(JSON.parse(String(init.body)).state);
+        return states.length === 1
+          ? Response.json({ detail: { error_type: "max_tokens_exceeded" } }, { status: 400 })
+          : Response.json({ answers: { resolved: { type: "noul", noul: 0.8 } } });
+      }),
+    );
+    const replies = Array.from({ length: 50 }, (_, seq) => ({
+      type: "item/completed",
+      seq,
+      data: { item: { type: "agentMessage", text: "x".repeat(2_000) } },
+    }));
+    const { harness, resolved } = await start(replies);
+
+    await harness.runCli(["check", THREAD]);
+
+    expect(states).toHaveLength(2);
+    expect(states[1]!.length).toBeLessThan(states[0]!.length);
+    expect(await resolved()).toEqual([THREAD]);
   });
 });

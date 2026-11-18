@@ -1,15 +1,15 @@
 # Thread Resolved
 
-A bb plugin that keeps asking a small model one question about each of your
+A bb plugin that keeps asking a decision model one question about each of your
 threads:
 
 > Is all of the work for this thread either resolved or picked up by another thread?
 
-When the answer is yes, the thread gets a green check in its sidebar row and a
-**Resolved** chip above the composer (click it for the model's one-line
-reason). While an answer is on its way (a few seconds after a turn ends, or
+The model answers with its confidence that the answer is yes. At 70% or more,
+the thread gets a green check in its sidebar row and a **Resolved** chip above
+the composer showing that confidence. While an answer is on its way (a few seconds after a turn ends, or
 while the model reads the thread) the row shows a spinner and the chip
-reads **Checking…**. When the answer is no, nothing changes.
+reads **Checking…**. Below the threshold, nothing changes.
 
 ## Install
 
@@ -27,8 +27,8 @@ bb plugin update thread-resolved   # later releases in the same range
   answer, so an unchanged thread costs no model call.
 - **What the model reads:** the whole thread (user turns, messages from bb and
   other threads, agent replies, commands run, tool calls, files changed; file
-  reads and reasoning are left out), capped at 100k characters by cutting the
-  middle. It also gets the parent thread, each child thread and each thread the transcript
+  reads and reasoning are left out), capped at 60k characters by cutting the
+  middle. A thread the model finds too long is asked again at 30k, then 15k. It also gets the parent thread, each child thread and each thread the transcript
   mentions, with its state (running, idle, archived) and the end of its last
   reply.
 - **When it shows nothing:** while the thread works, waits on you, has queued
@@ -41,28 +41,33 @@ bb plugin update thread-resolved   # later releases in the same range
   there. Written, tested, committed, pushed or in a pull request is not done.
   A thread another thread started for one part of a task is done once it
   reports back; shipping is the starting thread's job.
-- **Unsure means no.** The prompt tells the model to answer no when unsure.
-- **New prompt, new answers.** Every stored verdict carries a hash of the
-  prompt, so a release that changes the prompt re-judges each thread once.
+- **Unsure means no.** A confidence below `threshold` (default 0.7) shows
+  nothing. Changing `threshold` takes effect at once, without asking again.
+- **New question, new answers.** Every stored verdict carries a hash of the
+  question and its criteria, so a release that changes them re-judges each
+  thread once.
 
 ## Model
 
-Defaults to `hy4-flash-free` on OpenCode Go (`https://opencode.ai/zen/go/v1`),
-which costs nothing. With no `apiKey` set, the plugin reads the key OpenCode
-saved in `~/.local/share/opencode/auth.json`. Two checks run at a time; a 429
-pauses all checks for 5 minutes.
+Defaults to `jev-1.13-free`, a free decision model on OpenCode's System One
+endpoint (`https://opencode.ai/inference/systemone/v1/systemone`). It answers
+in a few hundred milliseconds. The paid `jev-1.13`, `gpt-6-luna-decision` and
+`gemini-decision-1` take the same request. With no `apiKey` set, the plugin
+reads the key OpenCode saved in `~/.local/share/opencode/auth.json`. Two checks
+run at a time; a 429 pauses all checks for 5 minutes.
 
 ```sh
-bb plugin config thread-resolved set model beam-free
+bb plugin config thread-resolved set decisionModel jev-1.13
+bb plugin config thread-resolved set threshold 0.8
 bb plugin config thread-resolved set lookbackDays 7
 ```
 
 ## CLI
 
 ```sh
-bb thread-resolved list [--json]               # threads judged resolved, with the reason
+bb thread-resolved list [--json]               # threads judged resolved, with the confidence
 bb thread-resolved judging [--json]            # threads awaiting a fresh verdict
-bb thread-resolved status <thread-id> [--json] # stored verdict, reason, last error
+bb thread-resolved status <thread-id> [--json] # stored confidence, last error
 bb thread-resolved check <thread-id> [--json]  # ask again now
 ```
 
@@ -75,9 +80,9 @@ npm run check:git-install          # build as a git install does, without dev de
 bb plugin install . --yes
 ```
 
-Before changing the prompt in `src/judge.ts`, replay it on real threads. This
-re-judges each thread with this checkout's prompt and prints one JSON verdict
-per line, without touching stored verdicts:
+Before changing the question or criteria in `src/judge.ts`, replay them on real
+threads. This re-judges each thread with this checkout's question and prints
+one JSON confidence per line, without touching stored verdicts:
 
 ```sh
 bb thread-resolved list --json | jq -r '.[].threadId' | npx tsx scripts/replay.ts

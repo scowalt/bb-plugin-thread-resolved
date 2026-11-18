@@ -7,7 +7,9 @@ threads:
 
 When the answer is yes, the thread gets a green check in its sidebar row and a
 **Resolved** chip above the composer (click it for the model's one-line
-reason). When the answer is no, nothing changes.
+reason). While an answer is on its way (a few seconds after a turn ends, or
+while the model reads the thread) the row shows a spinner and the chip
+reads **Checking…**. When the answer is no, nothing changes.
 
 ## Install
 
@@ -59,6 +61,7 @@ bb plugin config thread-resolved set lookbackDays 7
 
 ```sh
 bb thread-resolved list [--json]               # threads judged resolved, with the reason
+bb thread-resolved judging [--json]            # threads awaiting a fresh verdict
 bb thread-resolved status <thread-id> [--json] # stored verdict, reason, last error
 bb thread-resolved check <thread-id> [--json]  # ask again now
 ```

@@ -1,5 +1,6 @@
 // Thread Resolved: a checkmark on threads the server judged resolved, in the
-// sidebar row and beside the thread's composer. Unresolved threads show nothing.
+// sidebar row and beside the thread's composer, and a spinner while a
+// verdict is on its way. Unresolved threads show nothing.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   definePluginApp,
@@ -14,20 +15,32 @@ import {
 import { VERDICTS_CHANGED } from "./src/channels";
 import type { ResolvedThread, rpcContract } from "./src/contract";
 
-/** Resolved threads by id, refetched whenever the server's verdicts change. */
-function useResolvedThreads(): ReadonlyMap<string, ResolvedThread> {
+type Verdict = { kind: "resolved"; thread: ResolvedThread } | { kind: "judging" };
+
+/**
+ * Each thread's verdict by id, refetched whenever the server's verdicts
+ * change. A thread being re-judged shows as judging even if its old verdict
+ * was resolved, since a new turn already cleared that.
+ */
+function useVerdicts(): ReadonlyMap<string, Verdict> {
   const rpc = useRpc<typeof rpcContract>();
-  const [threads, setThreads] = useState<readonly ResolvedThread[]>([]);
+  const [list, setList] = useState<{ threads: readonly ResolvedThread[]; judging: readonly string[] }>({
+    threads: [],
+    judging: [],
+  });
   const refetch = useCallback(() => {
-    rpc.call("resolved_list").then(
-      (result) => setThreads(result.threads),
-      () => {},
-    );
+    rpc.call("resolved_list").then(setList, () => {});
   }, [rpc]);
   useEffect(refetch, [refetch]);
   useRealtime(VERDICTS_CHANGED, refetch);
-  return useMemo(() => new Map(threads.map((thread) => [thread.threadId, thread])), [threads]);
+  return useMemo(() => {
+    const verdicts = new Map<string, Verdict>(list.threads.map((thread) => [thread.threadId, { kind: "resolved", thread }]));
+    for (const threadId of list.judging) verdicts.set(threadId, { kind: "judging" });
+    return verdicts;
+  }, [list]);
 }
+
+const JUDGING_LABEL = "Checking whether this thread is resolved";
 
 // Only a content script may set sidebar row statuses, and only a React slot
 // may read RPC, so the script hands its setter to the overlay below.
@@ -47,23 +60,40 @@ function useRowStatusSetter(): SetRowStatus | null {
 }
 
 function SidebarCheckmarks() {
-  const resolved = useResolvedThreads();
+  const verdicts = useVerdicts();
   const setter = useRowStatusSetter();
   useEffect(() => {
     if (!setter) return;
-    for (const [threadId, thread] of resolved) {
-      setter(threadId, { icon: "CircleCheck", label: `Resolved: ${thread.reason}`, tone: "success" });
+    for (const [threadId, verdict] of verdicts) {
+      setter(
+        threadId,
+        verdict.kind === "resolved"
+          ? { icon: "CircleCheck", label: `Resolved: ${verdict.thread.reason}`, tone: "success" }
+          : { icon: "Loading", label: JUDGING_LABEL },
+      );
     }
     return () => {
-      for (const threadId of resolved.keys()) setter(threadId, null);
+      for (const threadId of verdicts.keys()) setter(threadId, null);
     };
-  }, [resolved, setter]);
+  }, [verdicts, setter]);
   return null;
 }
 
 function ResolvedChip({ threadId, isExpanded, onToggle }: ExperimentalThreadContextSegmentProps) {
-  const thread = useResolvedThreads().get(threadId);
-  if (!thread) return null;
+  const verdict = useVerdicts().get(threadId);
+  if (!verdict) return null;
+  if (verdict.kind === "judging") {
+    return (
+      <span
+        title={JUDGING_LABEL}
+        className="inline-flex h-6 shrink-0 items-center gap-1 px-1.5 text-xs text-muted-foreground"
+      >
+        <Icon name="Loading" className="size-3.5 animate-spin" />
+        Checking…
+      </span>
+    );
+  }
+  const { thread } = verdict;
   return (
     <button
       type="button"
@@ -79,8 +109,9 @@ function ResolvedChip({ threadId, isExpanded, onToggle }: ExperimentalThreadCont
 }
 
 function ResolvedDetails({ threadId, isExpanded }: ExperimentalThreadContextSegmentProps) {
-  const thread = useResolvedThreads().get(threadId);
-  if (!isExpanded || !thread) return null;
+  const verdict = useVerdicts().get(threadId);
+  if (!isExpanded || verdict?.kind !== "resolved") return null;
+  const { thread } = verdict;
   return (
     <p className="px-1.5 pt-1 pb-1 text-xs text-muted-foreground">
       {thread.reason}{" "}
@@ -109,6 +140,6 @@ export default definePluginApp((app) => {
     order: 100,
     summary: ResolvedChip,
     details: ResolvedDetails,
-    useVisible: ({ threadId }) => useResolvedThreads().has(threadId),
+    useVisible: ({ threadId }) => useVerdicts().has(threadId),
   });
 });

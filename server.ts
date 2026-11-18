@@ -99,10 +99,23 @@ export default async function plugin(bb: BbPluginApi) {
 
   const changed = () => bb.realtime.publish(VERDICTS_CHANGED, null);
 
+  // Idle threads whose verdict is on its way: settling after a turn ended, or
+  // past the fingerprint check with a model call in flight. Memory only; a
+  // restart drops it and the next check re-adds what still needs judging.
+  const judging = new Set<string>();
+  function setJudging(threadId: string, on: boolean) {
+    if (judging.has(threadId) === on) return;
+    if (on) judging.add(threadId);
+    else judging.delete(threadId);
+    changed();
+  }
+
   function clearVerdict(threadId: string) {
+    setJudging(threadId, false);
     if (unresolve.run(threadId).changes > 0) changed();
   }
   function forgetThread(threadId: string) {
+    setJudging(threadId, false);
     const row = getRow.get(threadId);
     deleteRow.run(threadId);
     if (row?.resolved) changed();
@@ -172,6 +185,14 @@ export default async function plugin(bb: BbPluginApi) {
 
   /** Re-judge one thread when it or a related thread changed since the last verdict. */
   async function check(threadId: string, signal: AbortSignal, force = false): Promise<VerdictRow | null> {
+    try {
+      return await judge(threadId, signal, force);
+    } finally {
+      setJudging(threadId, false);
+    }
+  }
+
+  async function judge(threadId: string, signal: AbortSignal, force: boolean): Promise<VerdictRow | null> {
     const [thread] = await listThreads([threadId], false);
     if (!thread || thread.deletedAt !== null) {
       forgetThread(threadId);
@@ -193,6 +214,7 @@ export default async function plugin(bb: BbPluginApi) {
       if (previous.fingerprint === cheap) return previous;
       if (previous.error_at !== null && Date.now() - previous.error_at < RETRY_AFTER_ERROR_MS) return previous;
     }
+    setJudging(threadId, true);
 
     const transcript = await readTranscript(threadId, signal);
     const mentions = mentionedThreadIds(transcript, threadId).filter((id) => !children.includes(id) && !parent.includes(id));
@@ -285,6 +307,7 @@ export default async function plugin(bb: BbPluginApi) {
   bb.events.on("thread.failed", ({ thread }) => clearVerdict(thread.id));
   bb.events.on("interaction.pending", ({ thread }) => clearVerdict(thread.id));
   bb.events.on("thread.idle", ({ thread }) => {
+    setJudging(thread.id, true);
     enqueue(thread.id, { delayMs: IDLE_SETTLE_MS });
     enqueue(thread.parentThreadId, { delayMs: IDLE_SETTLE_MS });
   });
@@ -329,12 +352,13 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   bb.rpc.register(rpcContract, {
-    resolved_list: () => ({ threads: resolvedThreads() }),
+    resolved_list: () => ({ threads: resolvedThreads(), judging: [...judging] }),
   });
 
   const usage = [
     "Usage:",
     "  bb thread-resolved list [--json]             Threads judged resolved",
+    "  bb thread-resolved judging [--json]          Threads awaiting a fresh verdict",
     "  bb thread-resolved status <thread-id> [--json]  The stored verdict for a thread",
     "  bb thread-resolved check <thread-id> [--json]   Ask the model now, ignoring the cache",
   ].join("\n");
@@ -342,6 +366,7 @@ export default async function plugin(bb: BbPluginApi) {
     if (!row) return { verdict: "none" };
     return {
       threadId: row.thread_id,
+      judging: judging.has(row.thread_id),
       resolved: row.resolved === 1,
       reason: row.reason,
       checkedAt: row.checked_at ? new Date(row.checked_at).toISOString() : null,
@@ -353,6 +378,7 @@ export default async function plugin(bb: BbPluginApi) {
     summary: "See which threads the model judged resolved, or re-check one",
     commands: [
       { name: "list", summary: "Threads judged resolved", usage: "bb thread-resolved list [--json]" },
+      { name: "judging", summary: "Threads awaiting a fresh verdict", usage: "bb thread-resolved judging [--json]" },
       { name: "status", summary: "The stored verdict for a thread", usage: "bb thread-resolved status <thread-id> [--json]" },
       { name: "check", summary: "Ask the model about a thread now", usage: "bb thread-resolved check <thread-id> [--json]" },
     ],
@@ -364,6 +390,7 @@ export default async function plugin(bb: BbPluginApi) {
         stdout: json ? JSON.stringify(value) : JSON.stringify(value, null, 2),
       });
       if (command === "list" && threadId === undefined) return reply(resolvedThreads());
+      if (command === "judging" && threadId === undefined) return reply([...judging]);
       if (threadId !== undefined && rest.length === 0) {
         if (command === "status") return reply(describe(getRow.get(threadId)));
         if (command === "check") return reply(describe(await check(threadId, stopping.signal, true)));

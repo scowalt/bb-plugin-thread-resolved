@@ -4,7 +4,9 @@ decided by a free OpenCode decision model that rereads the thread whenever it ch
 ## What you get
 
 - A check in the thread's sidebar row, in place of its status.
-- A **Resolved** chip above the composer with the model's confidence.
+- A **Resolved** chip above the composer with the model's confidence, or how
+  much of the work is done (**45% done**) while the thread is open.
+- The same percentage on the sidebar row's metadata line, when that line is on.
 - `bb thread-resolved` to list verdicts or re-check a thread.
 
 ## What it sends where

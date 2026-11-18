@@ -1,15 +1,19 @@
 # Thread Resolved
 
-A bb plugin that keeps asking a decision model one question about each of your
+A bb plugin that keeps asking a decision model two questions about each of your
 threads:
 
 > Is all of the work for this thread either resolved or picked up by another thread?
+>
+> How much of the work the person asked for in this thread is finished?
 
-The model answers with its confidence that the answer is yes. At 70% or more,
-the thread gets a green check in its sidebar row and a **Resolved** chip above
-the composer showing that confidence. While an answer is on its way (a few seconds after a turn ends, or
-while the model reads the thread) the row shows a spinner and the chip
-reads **Checking…**. Below the threshold, nothing changes.
+The model answers the first with its confidence that the answer is yes. At 70%
+or more, the thread gets a green check in its sidebar row and a **Resolved**
+chip above the composer showing that confidence. Below the threshold, the chip
+reads **45% done** instead, and the sidebar row's metadata line (Organize →
+Rows → Metadata, where bb offers it) shows **45%**. While an answer is on its
+way (a few seconds after a turn ends, or while the model reads the thread) the
+row shows a spinner and the chip reads **Checking…**.
 
 ## Install
 
@@ -41,6 +45,11 @@ bb plugin update thread-resolved   # later releases in the same range
   there. Written, tested, committed, pushed or in a pull request is not done.
   A thread another thread started for one part of a task is done once it
   reports back; shipping is the starting thread's job.
+- **How much is done:** the model places the thread on five levels, from none
+  of it done through about a quarter, half and three quarters (one final step
+  left: shipping, checking, a decision, or action items for you) to all of it
+  done. The answer is the expected level, so it lands between them, such as
+  55%. The levels fit any task, not only code.
 - **Unsure means no.** A confidence below `threshold` (default 0.7) shows
   nothing. Changing `threshold` takes effect at once, without asking again.
 - **New question, new answers.** Every stored verdict carries a hash of the
@@ -65,9 +74,9 @@ bb plugin config thread-resolved set lookbackDays 7
 ## CLI
 
 ```sh
-bb thread-resolved list [--json]               # threads judged resolved, with the confidence
+bb thread-resolved list [--json]               # threads judged resolved, with confidence and progress
 bb thread-resolved judging [--json]            # threads awaiting a fresh verdict
-bb thread-resolved status <thread-id> [--json] # stored confidence, last error
+bb thread-resolved status <thread-id> [--json] # stored confidence and progress, last error
 bb thread-resolved check <thread-id> [--json]  # ask again now
 ```
 

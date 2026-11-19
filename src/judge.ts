@@ -34,9 +34,19 @@ const CRITERIA = {
 - A request from the person has no answer yet.`,
 };
 
-/** Changes whenever the question does, so stored verdicts from an older question are judged again. */
+const PROGRESS_INSTRUCTIONS =
+  "The state is a thread in bb, where a person works with an AI agent on any kind of task: coding, research, writing, planning, operations, questions. How much of the work the person asked for in this thread is finished? Finished means the person has nothing left to do or wait for: questions answered, changes shipped and checked, or the work handed off or dropped.";
+
+const PROGRESS_LEVELS = [
+  "None of it is done",
+  "Some of it is done; most of it remains",
+  "Most of it is done, with a final step left: shipping, checking, a decision, or action items for the person",
+  "All of it is done; the person has nothing left to do",
+];
+
+/** Changes whenever the questions do, so stored verdicts from older questions are judged again. */
 export const PROMPT_VERSION = createHash("sha256")
-  .update(JSON.stringify([INSTRUCTIONS, CRITERIA]))
+  .update(JSON.stringify([INSTRUCTIONS, CRITERIA, PROGRESS_INSTRUCTIONS, PROGRESS_LEVELS]))
   .digest("hex")
   .slice(0, 12);
 
@@ -70,16 +80,26 @@ export interface ModelConfig {
   model: string;
 }
 
+/** Both from 0 to 1. */
+export interface Verdict {
+  /** The probability that the thread's work is resolved. */
+  confidence: number;
+  /** The level of `PROGRESS_LEVELS` the model finds most likely, as 0, 1/3, 2/3 or 1. */
+  progress: number;
+}
+
 const answerSchema = z.object({
-  answers: z.object({ resolved: z.object({ noul: z.number().min(0).max(1) }) }),
+  answers: z.object({
+    resolved: z.object({ noul: z.number().min(0).max(1) }),
+    progress: z.object({ probabilities: z.record(z.string(), z.number()) }),
+  }),
 });
 const errorSchema = z.union([
   z.object({ error: z.object({ message: z.string() }) }).transform((body) => body.error.message),
   z.object({ detail: z.object({ error_type: z.string() }) }).transform((body) => body.detail.error_type),
 ]);
 
-/** The probability, from 0 to 1, that the thread is resolved. */
-export async function askConfidence(config: ModelConfig, state: string, signal: AbortSignal): Promise<number> {
+export async function askVerdict(config: ModelConfig, state: string, signal: AbortSignal): Promise<Verdict> {
   const response = await fetch(DECISION_ENDPOINT, {
     method: "POST",
     signal: AbortSignal.any([signal, AbortSignal.timeout(60_000)]),
@@ -87,7 +107,10 @@ export async function askConfidence(config: ModelConfig, state: string, signal: 
     body: JSON.stringify({
       model: config.model,
       state,
-      questions: { resolved: { type: "noul", instructions: INSTRUCTIONS, criteria: CRITERIA } },
+      questions: {
+        resolved: { type: "noul", instructions: INSTRUCTIONS, criteria: CRITERIA },
+        progress: { type: "score", instructions: PROGRESS_INSTRUCTIONS, criteria: PROGRESS_LEVELS },
+      },
     }),
   });
   const body: unknown = await response.json().catch(() => null);
@@ -96,5 +119,8 @@ export async function askConfidence(config: ModelConfig, state: string, signal: 
     const message = error.success ? error.data : JSON.stringify(body)?.slice(0, 300);
     throw new ModelError(`${config.model} answered ${response.status}: ${message}`, response.status, message === "max_tokens_exceeded");
   }
-  return answerSchema.parse(body).answers.resolved.noul;
+  const { answers } = answerSchema.parse(body);
+  const likelihood = (level: number) => answers.progress.probabilities[String(level)] ?? 0;
+  const level = [...PROGRESS_LEVELS.keys()].reduce((best, next) => (likelihood(next) > likelihood(best) ? next : best));
+  return { confidence: answers.resolved.noul, progress: level / (PROGRESS_LEVELS.length - 1) };
 }

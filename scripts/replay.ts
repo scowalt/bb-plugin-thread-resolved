@@ -1,5 +1,5 @@
 // Re-judges threads with the question in this checkout, to see how a question
-// change moves confidences before it ships. Prints one JSON line per thread.
+// change moves confidences and progress before it ships. Prints one JSON line per thread.
 //
 //   bb thread-resolved list --json | jq -r '.[].threadId' | npx tsx scripts/replay.ts
 //   npx tsx scripts/replay.ts thr_abc123 thr_def456
@@ -8,7 +8,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { askConfidence, buildState, PROMPT_VERSION, type RelatedThread } from "../src/judge.ts";
+import { askVerdict, buildState, PROMPT_VERSION, type RelatedThread } from "../src/judge.ts";
 import { buildTranscript, eventToEntry, mentionedThreadIds, type RawEvent } from "../src/transcript.ts";
 
 const exec = promisify(execFile);
@@ -59,8 +59,8 @@ async function judge(id: string, children: Map<string, string[]>, model: Awaited
     }),
   );
   const state = buildState({ title: thread.title ?? thread.titleFallback ?? "(untitled)", transcript, related });
-  const confidence = await askConfidence(model, state, AbortSignal.timeout(60_000));
-  return { id, title: thread.title, prompt: PROMPT_VERSION, confidence };
+  const verdict = await askVerdict(model, state, AbortSignal.timeout(60_000));
+  return { id, title: thread.title, prompt: PROMPT_VERSION, ...verdict };
 }
 
 const fromStdin = process.stdin.isTTY ? "" : await new Response(process.stdin as unknown as ReadableStream).text();

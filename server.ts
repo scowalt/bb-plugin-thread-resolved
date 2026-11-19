@@ -1,14 +1,23 @@
 // Thread Resolved: asks a decision model how likely it is that each idle
-// thread's work is resolved or picked up by another thread, and publishes the
-// threads above the threshold so the app can draw a checkmark on them.
+// thread's work is resolved or picked up by another thread, and how much of it
+// is done, and publishes the verdicts so the app can draw a checkmark on
+// threads above the threshold and a percentage on the rest.
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { VERDICTS_CHANGED } from "./src/channels";
-import { rpcContract, type ResolvedThread } from "./src/contract";
-import { askConfidence, buildState, ModelError, PROMPT_VERSION, type ModelConfig, type RelatedThread } from "./src/judge";
+import { rpcContract, type ThreadVerdict } from "./src/contract";
+import {
+  askVerdict,
+  buildState,
+  ModelError,
+  PROMPT_VERSION,
+  type ModelConfig,
+  type RelatedThread,
+  type Verdict,
+} from "./src/judge";
 import {
   buildTranscript,
   eventToEntry,
@@ -33,6 +42,8 @@ interface VerdictRow {
   fingerprint: string;
   /** The probability that the thread is resolved; null when there is no current verdict. */
   confidence: number | null;
+  /** How much of the work is done, from 0 to 1; null exactly when `confidence` is. */
+  progress: number | null;
   checked_at: number;
   mentioned_ids: string;
   error: string | null;
@@ -92,24 +103,26 @@ export default async function plugin(bb: BbPluginApi) {
       error TEXT,
       error_at INTEGER
     )`,
+    "ALTER TABLE verdicts ADD COLUMN progress REAL",
+    "UPDATE verdicts SET confidence = NULL, fingerprint = '' WHERE progress IS NULL",
   ]);
   const getRow = db.prepare<[string], VerdictRow>("SELECT * FROM verdicts WHERE thread_id = ?");
   const upsertRow = db.prepare(
-    `INSERT INTO verdicts (thread_id, fingerprint, confidence, checked_at, mentioned_ids, error, error_at)
-     VALUES (@thread_id, @fingerprint, @confidence, @checked_at, @mentioned_ids, NULL, NULL)
+    `INSERT INTO verdicts (thread_id, fingerprint, confidence, progress, checked_at, mentioned_ids, error, error_at)
+     VALUES (@thread_id, @fingerprint, @confidence, @progress, @checked_at, @mentioned_ids, NULL, NULL)
      ON CONFLICT(thread_id) DO UPDATE SET fingerprint = excluded.fingerprint, confidence = excluded.confidence,
-       checked_at = excluded.checked_at, mentioned_ids = excluded.mentioned_ids, error = NULL, error_at = NULL`,
+       progress = excluded.progress, checked_at = excluded.checked_at, mentioned_ids = excluded.mentioned_ids, error = NULL, error_at = NULL`,
   );
   const recordError = db.prepare(
-    `INSERT INTO verdicts (thread_id, fingerprint, confidence, checked_at, error, error_at)
-     VALUES (?, '', NULL, 0, ?, ?)
+    `INSERT INTO verdicts (thread_id, fingerprint, confidence, progress, checked_at, error, error_at)
+     VALUES (?, '', NULL, NULL, 0, ?, ?)
      ON CONFLICT(thread_id) DO UPDATE SET error = excluded.error, error_at = excluded.error_at`,
   );
   const unresolve = db.prepare(
-    "UPDATE verdicts SET confidence = NULL, fingerprint = '' WHERE thread_id = ? AND confidence IS NOT NULL",
+    "UPDATE verdicts SET confidence = NULL, progress = NULL, fingerprint = '' WHERE thread_id = ? AND confidence IS NOT NULL",
   );
   const deleteRow = db.prepare("DELETE FROM verdicts WHERE thread_id = ?");
-  const listResolved = db.prepare<[number], VerdictRow>("SELECT * FROM verdicts WHERE confidence >= ?");
+  const listJudged = db.prepare<[], VerdictRow>("SELECT * FROM verdicts WHERE confidence IS NOT NULL");
 
   const changed = () => bb.realtime.publish(VERDICTS_CHANGED, null);
 
@@ -197,16 +210,16 @@ export default async function plugin(bb: BbPluginApi) {
     return entries;
   }
 
-  /** The confidence for the longest transcript the model accepts. */
+  /** The verdict for the longest transcript the model accepts. */
   async function askAtBudgets(
     entries: readonly string[],
     stateFor: (transcript: string) => string,
     signal: AbortSignal,
-  ): Promise<number> {
+  ): Promise<Verdict> {
     const config = await modelConfig();
     for (const [index, budget] of TRANSCRIPT_BUDGETS.entries()) {
       try {
-        return await askConfidence(config, stateFor(buildTranscript(entries, budget)), signal);
+        return await askVerdict(config, stateFor(buildTranscript(entries, budget)), signal);
       } catch (error) {
         if (!(error instanceof ModelError && error.tooLong) || index === TRANSCRIPT_BUDGETS.length - 1) throw error;
       }
@@ -267,16 +280,23 @@ export default async function plugin(bb: BbPluginApi) {
     const title = thread.title ?? thread.titleFallback ?? "(untitled)";
 
     try {
-      const confidence = await askAtBudgets(entries, (transcript) => buildState({ title, transcript, related }), signal);
+      const { confidence, progress } = await askAtBudgets(
+        entries,
+        (transcript) => buildState({ title, transcript, related }),
+        signal,
+      );
       upsertRow.run({
         thread_id: threadId,
         fingerprint: fingerprint(thread, states),
         confidence,
+        progress,
         checked_at: Date.now(),
         mentioned_ids: JSON.stringify(mentions.filter((id) => relatedIds.includes(id))),
       });
       changed();
-      bb.log.info(`judged ${threadId}: ${Math.round(confidence * 100)}% resolved`);
+      bb.log.info(
+        `judged ${threadId}: ${Math.round(confidence * 100)}% resolved, ${Math.round(progress * 100)}% done`,
+      );
       return getRow.get(threadId) ?? null;
     } catch (error) {
       if (signal.aborted) throw error;
@@ -376,15 +396,25 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  async function resolvedThreads(): Promise<ResolvedThread[]> {
+  async function judgedThreads(): Promise<ThreadVerdict[]> {
     const { threshold } = await settings.get();
-    return listResolved
-      .all(threshold)
-      .map((row) => ({ threadId: row.thread_id, confidence: row.confidence ?? 0, checkedAt: row.checked_at }));
+    return listJudged.all().flatMap((row) =>
+      row.confidence === null || row.progress === null
+        ? []
+        : [
+            {
+              threadId: row.thread_id,
+              resolved: row.confidence >= threshold,
+              confidence: row.confidence,
+              progress: row.progress,
+              checkedAt: row.checked_at,
+            },
+          ],
+    );
   }
 
   bb.rpc.register(rpcContract, {
-    resolved_list: async () => ({ threads: await resolvedThreads(), judging: [...judging] }),
+    verdict_list: async () => ({ threads: await judgedThreads(), judging: [...judging] }),
   });
 
   const usage = [
@@ -402,6 +432,7 @@ export default async function plugin(bb: BbPluginApi) {
       judging: judging.has(row.thread_id),
       resolved: row.confidence !== null && row.confidence >= threshold,
       confidence: row.confidence,
+      progress: row.progress,
       checkedAt: row.checked_at ? new Date(row.checked_at).toISOString() : null,
       error: row.error,
     };
@@ -422,7 +453,9 @@ export default async function plugin(bb: BbPluginApi) {
         exitCode: 0,
         stdout: json ? JSON.stringify(value) : JSON.stringify(value, null, 2),
       });
-      if (command === "list" && threadId === undefined) return reply(await resolvedThreads());
+      if (command === "list" && threadId === undefined) {
+        return reply((await judgedThreads()).filter((verdict) => verdict.resolved));
+      }
       if (command === "judging" && threadId === undefined) return reply([...judging]);
       if (threadId !== undefined && rest.length === 0) {
         if (command === "status") return reply(await describe(getRow.get(threadId)));

@@ -1,6 +1,12 @@
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import plugin from "../server";
+import type { ThreadVerdict } from "./contract";
+
+interface VerdictList {
+  threads: ThreadVerdict[];
+  judging: string[];
+}
 
 const THREAD = "thr_aaaaaaaaaa";
 
@@ -14,7 +20,12 @@ function holdModel() {
         new Promise<Response>((resolve) => {
           answer = (resolved) =>
             resolve(
-              Response.json({ answers: { resolved: { type: "noul", noul: resolved ? 0.9 : 0.1 } } }),
+              Response.json({
+                answers: {
+                  resolved: { type: "noul", noul: resolved ? 0.9 : 0.1 },
+                  progress: { type: "score", probabilities: resolved ? { 3: 0.9, 2: 0.1 } : { 1: 0.6, 2: 0.4 } },
+                },
+              }),
             );
         }),
     ),
@@ -37,10 +48,10 @@ async function start(events: object[] = []) {
     },
   });
   await plugin(bb);
-  const judging = async () => ((await harness.callRpc("resolved_list", null)) as { judging: string[] }).judging;
-  const resolved = async () =>
-    ((await harness.callRpc("resolved_list", null)) as { threads: { threadId: string }[] }).threads.map((t) => t.threadId);
-  return { harness, thread, judging, resolved };
+  const list = async () => (await harness.callRpc("verdict_list", null)) as VerdictList;
+  const judging = async () => (await list()).judging;
+  const resolved = async () => (await list()).threads.filter((t) => t.resolved).map((t) => t.threadId);
+  return { harness, thread, list, judging, resolved };
 }
 
 describe("judging state", () => {
@@ -115,7 +126,9 @@ describe("long threads", () => {
         states.push(JSON.parse(String(init.body)).state);
         return states.length === 1
           ? Response.json({ detail: { error_type: "max_tokens_exceeded" } }, { status: 400 })
-          : Response.json({ answers: { resolved: { type: "noul", noul: 0.8 } } });
+          : Response.json({
+              answers: { resolved: { type: "noul", noul: 0.8 }, progress: { type: "score", probabilities: { 3: 1 } } },
+            });
       }),
     );
     const replies = Array.from({ length: 50 }, (_, seq) => ({
@@ -130,5 +143,31 @@ describe("long threads", () => {
     expect(states).toHaveLength(2);
     expect(states[1]!.length).toBeLessThan(states[0]!.length);
     expect(await resolved()).toEqual([THREAD]);
+  });
+});
+
+describe("progress", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("reports the most likely third of an open thread done, and keeps it out of the resolved list", async () => {
+    const requests: { questions: Record<string, { type: string }> }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        requests.push(JSON.parse(String(init.body)));
+        return Response.json({
+          answers: { resolved: { type: "noul", noul: 0.2 }, progress: { type: "score", score: 2.4, probabilities: { 1: 0.2, 2: 0.5, 3: 0.3 } } },
+        });
+      }),
+    );
+    const { harness, list } = await start();
+
+    const status = await harness.runCli(["check", THREAD, "--json"]);
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.questions.progress!.type).toBe("score");
+    expect(JSON.parse(status.stdout)).toMatchObject({ resolved: false, confidence: 0.2, progress: 2 / 3 });
+    expect((await list()).threads).toMatchObject([{ threadId: THREAD, resolved: false, progress: 2 / 3 }]);
+    expect(JSON.parse((await harness.runCli(["list", "--json"])).stdout)).toEqual([]);
   });
 });

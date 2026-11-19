@@ -10,9 +10,8 @@ threads:
 The model answers the first with its confidence that the answer is yes. At 70%
 or more, the thread gets a green check in its sidebar row and a **Resolved**
 chip above the composer showing that confidence. Below the threshold, the chip
-shows a progress ring instead, empty or filled a third or two thirds, and so
-does the sidebar row's metadata line (Organize → Rows → Metadata,
-where bb offers it). While an answer is on its
+shows a progress ring instead, empty or filled a third or two thirds, and the
+sidebar row shows the same ring where the check would go. While an answer is on its
 way (a few seconds after a turn ends, or while the model reads the thread) the
 row shows a spinner and the chip reads **Checking…**.
 

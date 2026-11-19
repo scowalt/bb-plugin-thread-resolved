@@ -8,7 +8,6 @@ import {
   useRealtime,
   useRpc,
   type ExperimentalThreadContextSegmentProps,
-  type ExperimentalThreadRowMetadataProps,
   type PluginContentScriptContext,
 } from "@get-bb/plugin-sdk/app";
 // Types only: git installs build without dev dependencies, so the frontend
@@ -53,31 +52,21 @@ const DONE_LABELS = ["Nothing done yet", "Some of it done", "Most of it done, a 
 const openThirds = (thread: ThreadVerdict) => Math.min(Math.round(thread.progress * 3), 2);
 const doneLabel = (thread: ThreadVerdict) => DONE_LABELS[openThirds(thread)] ?? "";
 
-function ProgressRing({ thread }: { thread: ThreadVerdict }) {
+function ProgressRing({ thirds, className }: { thirds: number; className?: string }) {
   return (
-    <svg
-      viewBox="0 0 16 16"
-      role="img"
-      aria-label={doneLabel(thread)}
-      className="size-4 shrink-0 -rotate-90 text-muted-foreground"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2.5}
-    >
-      <circle cx={8} cy={8} r={6} className="opacity-40" />
-      {openThirds(thread) > 0 && (
-        <circle
-          cx={8}
-          cy={8}
-          r={6}
-          pathLength={1}
-          strokeDasharray={`${openThirds(thread) / 3} 1`}
-          className="text-foreground"
-        />
-      )}
+    <svg viewBox="0 0 16 16" className={`-rotate-90 ${className ?? ""}`} fill="none" stroke="currentColor" strokeWidth={2.5}>
+      <circle cx={8} cy={8} r={6} opacity={0.35} />
+      {thirds > 0 && <circle cx={8} cy={8} r={6} pathLength={1} strokeDasharray={`${thirds / 3} 1`} />}
     </svg>
   );
 }
+
+/** Row statuses take an icon name, so each ring is registered as an app icon. */
+const RING_ICONS = DONE_LABELS.map((_, thirds) => ({
+  name: `ThreadResolvedRing${thirds}`,
+  component: ({ className }: { className?: string }) => <ProgressRing thirds={thirds} className={className} />,
+}));
+const ringIcon = (thread: ThreadVerdict) => RING_ICONS[openThirds(thread)]?.name ?? "";
 
 // Only a content script may set sidebar row statuses, and only a React slot
 // may read RPC, so the script hands its setter to the overlay below.
@@ -96,39 +85,27 @@ function useRowStatusSetter(): SetRowStatus | null {
   return setter;
 }
 
-/** Resolved and judging threads get a row icon; open ones keep bb's own glyph. */
-function SidebarCheckmarks() {
+/** Every judged or judging thread's sidebar row: a check, a progress ring, or a spinner. */
+function SidebarStatuses() {
   const verdicts = useVerdicts();
   const setter = useRowStatusSetter();
   useEffect(() => {
     if (!setter) return;
-    const marked: string[] = [];
     for (const [threadId, verdict] of verdicts) {
-      if (verdict.kind === "judged" && !verdict.thread.resolved) continue;
-      marked.push(threadId);
       setter(
         threadId,
-        verdict.kind === "judged"
-          ? { icon: "CircleCheck", label: `Resolved (${percent(verdict.thread.confidence)} confident)`, tone: "success" }
-          : { icon: "Loading", label: JUDGING_LABEL },
+        verdict.kind === "judging"
+          ? { icon: "Loading", label: JUDGING_LABEL }
+          : verdict.thread.resolved
+            ? { icon: "CircleCheck", label: `Resolved (${percent(verdict.thread.confidence)} confident)`, tone: "success" }
+            : { icon: ringIcon(verdict.thread), label: doneLabel(verdict.thread) },
       );
     }
     return () => {
-      for (const threadId of marked) setter(threadId, null);
+      for (const threadId of verdicts.keys()) setter(threadId, null);
     };
   }, [verdicts, setter]);
   return null;
-}
-
-/** The progress ring on the sidebar row's metadata line of a thread that is not resolved. */
-function ProgressMetadata({ thread, data }: ExperimentalThreadRowMetadataProps<Verdicts>) {
-  const verdict = data.get(thread.id);
-  if (verdict?.kind !== "judged" || verdict.thread.resolved) return null;
-  return (
-    <span title={doneLabel(verdict.thread)} className="inline-flex items-center text-muted-foreground">
-      <ProgressRing thread={verdict.thread} />
-    </span>
-  );
 }
 
 function ResolvedChip({ threadId, isExpanded, onToggle }: ExperimentalThreadContextSegmentProps) {
@@ -163,7 +140,9 @@ function ResolvedChip({ threadId, isExpanded, onToggle }: ExperimentalThreadCont
           <span className="opacity-70">{percent(thread.confidence)}</span>
         </>
       ) : (
-        <ProgressRing thread={thread} />
+        <span role="img" aria-label={doneLabel(thread)} className="inline-flex">
+          <ProgressRing thirds={openThirds(thread)} className="size-4 shrink-0" />
+        </span>
       )}
     </button>
   );
@@ -193,12 +172,8 @@ export default definePluginApp((app) => {
       };
     },
   });
-  app.slots.experimental_appOverlay({ id: "sidebar-checkmarks", component: SidebarCheckmarks });
-  app.slots.experimental_threadRowMetadata<Verdicts>({
-    id: "progress",
-    useData: useVerdicts,
-    component: ProgressMetadata,
-  });
+  for (const icon of RING_ICONS) app.experimental_icons.register(icon);
+  app.slots.experimental_appOverlay({ id: "sidebar-statuses", component: SidebarStatuses });
   app.slots.experimental_threadContextSegment({
     id: "resolved",
     title: "Thread resolved",

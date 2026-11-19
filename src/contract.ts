@@ -7,7 +7,7 @@ const threadVerdictSchema = z.object({
   resolved: z.boolean(),
   /** The probability, from 0 to 1, that the thread's work is resolved. */
   confidence: z.number(),
-  /** How much of the work, from 0 to 1, the model thinks is finished. */
+  /** How much of the work the model thinks is finished: 0, 1/3, 2/3 or 1. */
   progress: z.number(),
   checkedAt: z.number(),
 });

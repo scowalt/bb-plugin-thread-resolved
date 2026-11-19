@@ -10,8 +10,9 @@ threads:
 The model answers the first with its confidence that the answer is yes. At 70%
 or more, the thread gets a green check in its sidebar row and a **Resolved**
 chip above the composer showing that confidence. Below the threshold, the chip
-reads **45% done** instead, and the sidebar row's metadata line (Organize →
-Rows → Metadata, where bb offers it) shows **45%**. While an answer is on its
+shows a progress ring instead, empty or filled a third, two thirds or all the
+way, and so does the sidebar row's metadata line (Organize → Rows → Metadata,
+where bb offers it). While an answer is on its
 way (a few seconds after a turn ends, or while the model reads the thread) the
 row shows a spinner and the chip reads **Checking…**.
 
@@ -45,11 +46,11 @@ bb plugin update thread-resolved   # later releases in the same range
   there. Written, tested, committed, pushed or in a pull request is not done.
   A thread another thread started for one part of a task is done once it
   reports back; shipping is the starting thread's job.
-- **How much is done:** the model places the thread on five levels, from none
-  of it done through about a quarter, half and three quarters (one final step
-  left: shipping, checking, a decision, or action items for you) to all of it
-  done. The answer is the expected level, so it lands between them, such as
-  55%. The levels fit any task, not only code.
+- **How much is done:** the model weighs four levels: none of it done, some of
+  it done, most of it done with one final step left (shipping, checking, a
+  decision, or action items for you), and all of it done. The ring shows the
+  level it finds most likely, never a point between two. The levels fit any
+  task, not only code.
 - **Unsure means no.** A confidence below `threshold` (default 0.7) shows
   nothing. Changing `threshold` takes effect at once, without asking again.
 - **New question, new answers.** Every stored verdict carries a hash of the

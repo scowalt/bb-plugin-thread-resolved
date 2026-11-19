@@ -23,7 +23,7 @@ function holdModel() {
               Response.json({
                 answers: {
                   resolved: { type: "noul", noul: resolved ? 0.9 : 0.1 },
-                  progress: { type: "score", score: resolved ? 4 : 2 },
+                  progress: { type: "score", probabilities: resolved ? { 3: 0.9, 2: 0.1 } : { 1: 0.6, 2: 0.4 } },
                 },
               }),
             );
@@ -127,7 +127,7 @@ describe("long threads", () => {
         return states.length === 1
           ? Response.json({ detail: { error_type: "max_tokens_exceeded" } }, { status: 400 })
           : Response.json({
-              answers: { resolved: { type: "noul", noul: 0.8 }, progress: { type: "score", score: 4 } },
+              answers: { resolved: { type: "noul", noul: 0.8 }, progress: { type: "score", probabilities: { 3: 1 } } },
             });
       }),
     );
@@ -149,14 +149,14 @@ describe("long threads", () => {
 describe("progress", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("reports how much of an open thread is done, and keeps it out of the resolved list", async () => {
+  it("reports the most likely third of an open thread done, and keeps it out of the resolved list", async () => {
     const requests: { questions: Record<string, { type: string }> }[] = [];
     vi.stubGlobal(
       "fetch",
       vi.fn(async (_url: string, init: RequestInit) => {
         requests.push(JSON.parse(String(init.body)));
         return Response.json({
-          answers: { resolved: { type: "noul", noul: 0.2 }, progress: { type: "score", score: 3 } },
+          answers: { resolved: { type: "noul", noul: 0.2 }, progress: { type: "score", score: 2.4, probabilities: { 1: 0.2, 2: 0.5, 3: 0.3 } } },
         });
       }),
     );
@@ -166,8 +166,8 @@ describe("progress", () => {
 
     expect(requests).toHaveLength(1);
     expect(requests[0]!.questions.progress!.type).toBe("score");
-    expect(JSON.parse(status.stdout)).toMatchObject({ resolved: false, confidence: 0.2, progress: 0.75 });
-    expect((await list()).threads).toMatchObject([{ threadId: THREAD, resolved: false, progress: 0.75 }]);
+    expect(JSON.parse(status.stdout)).toMatchObject({ resolved: false, confidence: 0.2, progress: 2 / 3 });
+    expect((await list()).threads).toMatchObject([{ threadId: THREAD, resolved: false, progress: 2 / 3 }]);
     expect(JSON.parse((await harness.runCli(["list", "--json"])).stdout)).toEqual([]);
   });
 });

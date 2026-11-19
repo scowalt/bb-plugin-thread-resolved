@@ -39,9 +39,8 @@ const PROGRESS_INSTRUCTIONS =
 
 const PROGRESS_LEVELS = [
   "None of it is done",
-  "About a quarter is done",
-  "About half is done",
-  "About three quarters is done, with a final step left: shipping, checking, a decision, or action items for the person",
+  "Some of it is done; most of it remains",
+  "Most of it is done, with a final step left: shipping, checking, a decision, or action items for the person",
   "All of it is done; the person has nothing left to do",
 ];
 
@@ -85,14 +84,14 @@ export interface ModelConfig {
 export interface Verdict {
   /** The probability that the thread's work is resolved. */
   confidence: number;
-  /** How much of the work the model thinks is finished. */
+  /** The level of `PROGRESS_LEVELS` the model finds most likely, as 0, 1/3, 2/3 or 1. */
   progress: number;
 }
 
 const answerSchema = z.object({
   answers: z.object({
     resolved: z.object({ noul: z.number().min(0).max(1) }),
-    progress: z.object({ score: z.number().min(0).max(PROGRESS_LEVELS.length - 1) }),
+    progress: z.object({ probabilities: z.record(z.string(), z.number()) }),
   }),
 });
 const errorSchema = z.union([
@@ -121,5 +120,7 @@ export async function askVerdict(config: ModelConfig, state: string, signal: Abo
     throw new ModelError(`${config.model} answered ${response.status}: ${message}`, response.status, message === "max_tokens_exceeded");
   }
   const { answers } = answerSchema.parse(body);
-  return { confidence: answers.resolved.noul, progress: answers.progress.score / (PROGRESS_LEVELS.length - 1) };
+  const likelihood = (level: number) => answers.progress.probabilities[String(level)] ?? 0;
+  const level = [...PROGRESS_LEVELS.keys()].reduce((best, next) => (likelihood(next) > likelihood(best) ? next : best));
+  return { confidence: answers.resolved.noul, progress: level / (PROGRESS_LEVELS.length - 1) };
 }

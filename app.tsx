@@ -1,6 +1,6 @@
 // Thread Resolved: a checkmark on threads the server judged resolved, in the
-// sidebar row and beside the thread's composer, how much of the work is done
-// on the rest, and a spinner while a verdict is on its way.
+// sidebar row and beside the thread's composer, a ring filled by thirds for how
+// much of the work is done on the rest, and a spinner while a verdict is on its way.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   definePluginApp,
@@ -44,7 +44,25 @@ function useVerdicts(): Verdicts {
 
 const JUDGING_LABEL = "Checking whether this thread is resolved";
 const percent = (fraction: number) => `${Math.round(fraction * 100)}%`;
-const doneLabel = (thread: ThreadVerdict) => `About ${percent(thread.progress)} done`;
+const DONE_LABELS = ["Nothing done yet", "Some of it done", "Most of it done, a final step left", "All of it done"];
+const doneLabel = (thread: ThreadVerdict) => DONE_LABELS[Math.round(thread.progress * 3)] ?? "";
+
+function ProgressRing({ thread }: { thread: ThreadVerdict }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      role="img"
+      aria-label={doneLabel(thread)}
+      className="size-4 shrink-0 -rotate-90 text-muted-foreground"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2.5}
+    >
+      <circle cx={8} cy={8} r={6} className="opacity-40" />
+      {thread.progress > 0 && <circle cx={8} cy={8} r={6} pathLength={1} strokeDasharray={`${thread.progress} 1`} className="text-foreground" />}
+    </svg>
+  );
+}
 
 // Only a content script may set sidebar row statuses, and only a React slot
 // may read RPC, so the script hands its setter to the overlay below.
@@ -87,13 +105,13 @@ function SidebarCheckmarks() {
   return null;
 }
 
-/** "45%" on the sidebar row's metadata line of a thread that is not resolved. */
+/** The progress ring on the sidebar row's metadata line of a thread that is not resolved. */
 function ProgressMetadata({ thread, data }: ExperimentalThreadRowMetadataProps<Verdicts>) {
   const verdict = data.get(thread.id);
   if (verdict?.kind !== "judged" || verdict.thread.resolved) return null;
   return (
-    <span title={doneLabel(verdict.thread)} className="text-xs text-muted-foreground tabular-nums">
-      {percent(verdict.thread.progress)}
+    <span title={doneLabel(verdict.thread)} className="inline-flex items-center text-muted-foreground">
+      <ProgressRing thread={verdict.thread} />
     </span>
   );
 }
@@ -130,7 +148,7 @@ function ResolvedChip({ threadId, isExpanded, onToggle }: ExperimentalThreadCont
           <span className="opacity-70">{percent(thread.confidence)}</span>
         </>
       ) : (
-        `${percent(thread.progress)} done`
+        <ProgressRing thread={thread} />
       )}
     </button>
   );
@@ -142,7 +160,7 @@ function ResolvedDetails({ threadId, isExpanded }: ExperimentalThreadContextSegm
   const { thread } = verdict;
   return (
     <p className="px-1.5 pt-1 pb-1 text-xs text-muted-foreground">
-      {doneLabel(thread)} · {percent(thread.confidence)} confident it is resolved{" "}
+      {percent(thread.confidence)} confident it is resolved{" "}
       <span className="opacity-70">· checked {new Date(thread.checkedAt).toLocaleTimeString()}</span>
     </p>
   );

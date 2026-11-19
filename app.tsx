@@ -44,8 +44,14 @@ function useVerdicts(): Verdicts {
 
 const JUDGING_LABEL = "Checking whether this thread is resolved";
 const percent = (fraction: number) => `${Math.round(fraction * 100)}%`;
-const DONE_LABELS = ["Nothing done yet", "Some of it done", "Most of it done, a final step left", "All of it done"];
-const doneLabel = (thread: ThreadVerdict) => DONE_LABELS[Math.round(thread.progress * 3)] ?? "";
+const DONE_LABELS = ["Nothing done yet", "Some of it done", "Most of it done, a final step left"];
+/**
+ * The ring's thirds for a thread that is not resolved. A full ring would claim
+ * the thread is done, which only the resolved check may say, so "all of it
+ * done" without the check reads as a final step left.
+ */
+const openThirds = (thread: ThreadVerdict) => Math.min(Math.round(thread.progress * 3), 2);
+const doneLabel = (thread: ThreadVerdict) => DONE_LABELS[openThirds(thread)] ?? "";
 
 function ProgressRing({ thread }: { thread: ThreadVerdict }) {
   return (
@@ -59,7 +65,16 @@ function ProgressRing({ thread }: { thread: ThreadVerdict }) {
       strokeWidth={2.5}
     >
       <circle cx={8} cy={8} r={6} className="opacity-40" />
-      {thread.progress > 0 && <circle cx={8} cy={8} r={6} pathLength={1} strokeDasharray={`${thread.progress} 1`} className="text-foreground" />}
+      {openThirds(thread) > 0 && (
+        <circle
+          cx={8}
+          cy={8}
+          r={6}
+          pathLength={1}
+          strokeDasharray={`${openThirds(thread) / 3} 1`}
+          className="text-foreground"
+        />
+      )}
     </svg>
   );
 }
@@ -160,7 +175,7 @@ function ResolvedDetails({ threadId, isExpanded }: ExperimentalThreadContextSegm
   const { thread } = verdict;
   return (
     <p className="px-1.5 pt-1 pb-1 text-xs text-muted-foreground">
-      {percent(thread.confidence)} confident it is resolved{" "}
+      {thread.resolved ? `${percent(thread.confidence)} confident it is resolved` : doneLabel(thread)}{" "}
       <span className="opacity-70">· checked {new Date(thread.checkedAt).toLocaleTimeString()}</span>
     </p>
   );

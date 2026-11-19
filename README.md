@@ -27,8 +27,10 @@ bb plugin update thread-resolved   # later releases in the same range
 - **When it asks:** a few seconds after a thread goes idle, when one of its
   child threads goes idle or is archived, and on a one-minute sweep over every
   visible thread updated in the last `lookbackDays` days. The sweep asks again
-  only when the thread or a related thread changed state since the last
-  answer, so an unchanged thread costs no model call.
+  only when the thread or a related thread finished a turn, or a related
+  thread was archived, deleted or started waiting on the person, since the last
+  answer. Reading a thread, or a related thread starting a turn, costs no
+  model call.
 - **What the model reads:** the whole thread (user turns, messages from bb and
   other threads, agent replies, commands run, tool calls, files changed; file
   reads and reasoning are left out), capped at 60k characters by cutting the

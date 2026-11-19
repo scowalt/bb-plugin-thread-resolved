@@ -164,7 +164,7 @@ export default async function plugin(bb: BbPluginApi) {
     return bb.sdk.threads.list({ threadIds: ids.slice(0, 200), includeHidden: true, archived });
   }
 
-  /** Each related thread's state; status changes (not every event) re-trigger a check. */
+  /** Each related thread as it is now, or null once deleted. */
   async function relatedStates(ids: readonly string[]): Promise<Map<string, ListedThread | null>> {
     const found = [...(await listThreads(ids, false)), ...(await listThreads(ids, true))];
     return new Map(ids.map((id) => [id, found.find((thread) => thread.id === id) ?? null]));
@@ -174,9 +174,17 @@ export default async function plugin(bb: BbPluginApi) {
     if (thread.archivedAt !== null) return "archived";
     return thread.hasPendingInteraction ? `${thread.status}, waiting on the person` : thread.status;
   }
+  /**
+   * What a verdict depends on. latestAttentionAt moves when a turn ends, while
+   * updatedAt also moves when the person reads the thread. A related thread
+   * starting a turn changes nothing here; its turn ending does, so a parent is
+   * judged once per child turn, with the child's finished work in view.
+   */
   function fingerprint(thread: ListedThread, related: Map<string, ListedThread | null>): string {
-    const parts = [...related].sort(([a], [b]) => a.localeCompare(b)).map(([id, t]) => `${id}=${stateOf(t)}`);
-    return [PROMPT_VERSION, String(thread.updatedAt), ...parts].join("|");
+    const parts = [...related]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([id, t]) => `${id}=${t === null ? "deleted" : `${t.latestAttentionAt},${t.archivedAt !== null},${t.hasPendingInteraction}`}`);
+    return [PROMPT_VERSION, String(thread.latestAttentionAt), ...parts].join("|");
   }
 
   async function childIds(threadId: string): Promise<string[]> {
@@ -369,8 +377,8 @@ export default async function plugin(bb: BbPluginApi) {
     enqueue(thread.parentThreadId);
   });
 
-  // The sweep re-asks about every recent idle thread whose own or related
-  // threads' state moved, which catches a thread mentioned in another one
+  // The sweep re-asks about every recent idle thread whose fingerprint moved,
+  // which catches a thread mentioned in another one
   // finishing, and anything the events above missed.
   bb.background.service("sweep", {
     async start(signal) {

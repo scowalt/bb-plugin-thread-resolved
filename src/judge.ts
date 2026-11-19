@@ -15,7 +15,7 @@ export interface RelatedThread {
   lastOutput: string | null;
 }
 
-const INSTRUCTIONS = `The state is a thread in bb, an app where a person works with AI coding agents: one conversation between the person and an agent, plus the threads related to it. ${QUESTION}`;
+const INSTRUCTIONS = `The state is a thread in bb, an app where a person works with AI agents on any kind of task (coding, research, writing, planning, operations, questions): one conversation between the person and an agent, plus the threads related to it. ${QUESTION}`;
 
 const CRITERIA = {
   true: `Every request the person made in the thread meets one of these:

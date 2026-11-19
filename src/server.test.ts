@@ -33,15 +33,30 @@ function holdModel() {
   return { answer: (resolved: boolean) => answer(resolved) };
 }
 
-async function start(events: object[] = []) {
-  const thread = makeThreadResponse({ id: THREAD, status: "idle", updatedAt: Date.now() });
+const CHILD = "thr_bbbbbbbbbb";
+
+type Listed = ReturnType<typeof makeThreadResponse> & { hasPendingInteraction: boolean; queuedWork: "none" };
+const listed = (id: string, parentThreadId: string | null = null): Listed => ({
+  ...makeThreadResponse({ id, parentThreadId, status: "idle", updatedAt: 1, latestAttentionAt: 1 }),
+  hasPendingInteraction: false,
+  queuedWork: "none",
+});
+
+/** THREAD, or THREAD with CHILD under it; tests change the threads in place. */
+async function start(events: object[] = [], withChild = false) {
+  const threads = new Map([[THREAD, listed(THREAD)]]);
+  if (withChild) threads.set(CHILD, listed(CHILD, THREAD));
+  const thread = threads.get(THREAD)!;
   const { bb, harness } = createFakePluginHost({
     pluginId: "thread-resolved",
     settings: { apiKey: "test-key" },
     sdk: {
       threads: {
-        list: () => [{ ...thread, hasPendingInteraction: false, queuedWork: "none" }],
-        experimental_listDescendants: () => ({ threads: [{ threadId: THREAD, descendantIds: [] }] }),
+        list: (args) =>
+          args?.archived ? [] : [...threads.values()].filter((t) => args?.threadIds?.includes(t.id) ?? true),
+        experimental_listDescendants: () => ({
+          threads: [{ threadId: THREAD, descendantIds: withChild ? [CHILD] : [] }],
+        }),
         events: { list: () => events },
         output: () => ({ output: null }),
       },
@@ -51,7 +66,7 @@ async function start(events: object[] = []) {
   const list = async () => (await harness.callRpc("verdict_list", null)) as VerdictList;
   const judging = async () => (await list()).judging;
   const resolved = async () => (await list()).threads.filter((t) => t.resolved).map((t) => t.threadId);
-  return { harness, thread, list, judging, resolved };
+  return { harness, thread, threads, list, judging, resolved };
 }
 
 describe("judging state", () => {
@@ -169,5 +184,45 @@ describe("progress", () => {
     expect(JSON.parse(status.stdout)).toMatchObject({ resolved: false, confidence: 0.2, progress: 2 / 3 });
     expect((await list()).threads).toMatchObject([{ threadId: THREAD, resolved: false, progress: 2 / 3 }]);
     expect(JSON.parse((await harness.runCli(["list", "--json"])).stdout)).toEqual([]);
+  });
+});
+
+describe("when a thread is judged again", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          answers: { resolved: { type: "noul", noul: 0.2 }, progress: { type: "score", probabilities: { 2: 1 } } },
+        }),
+      ),
+    );
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("skips reads and a child's turn starting, and judges once when the child's turn ends", async () => {
+    const { harness, thread, threads, judging } = await start([], true);
+    const settle = async (calls: number) => {
+      await harness.emitThreadEvent("thread.idle", { thread } as never);
+      await vi.advanceTimersByTimeAsync(3_000);
+      await vi.waitFor(async () => expect(await judging()).toEqual([]));
+      expect(fetch).toHaveBeenCalledTimes(calls);
+    };
+    const child = threads.get(CHILD)!;
+
+    await settle(1);
+
+    threads.set(THREAD, { ...thread, updatedAt: 2, lastReadAt: 2 });
+    await settle(1);
+
+    threads.set(CHILD, { ...child, status: "active", updatedAt: 3 });
+    await settle(1);
+
+    threads.set(CHILD, { ...child, updatedAt: 4, latestAttentionAt: 4 });
+    await settle(2);
   });
 });

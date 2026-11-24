@@ -1,5 +1,5 @@
 A green check on every thread whose work is done or handed to another thread,
-decided by a free OpenCode decision model that rereads the thread whenever it changes.
+decided by OpenCode Go's jev-1.14 decision model that rereads the thread whenever it changes.
 
 ## What you get
 

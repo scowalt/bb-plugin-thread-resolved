@@ -4,7 +4,38 @@ import { z } from "zod";
 export const QUESTION =
   "Is all of the work for this thread either resolved or picked up by another thread?";
 
-export const DECISION_ENDPOINT = "https://opencode.ai/inference/systemone/v1/systemone";
+/** OpenCode's System One endpoint for each provider id, as auth.json and opencode.jsonc name them. */
+const ENDPOINTS = {
+  "opencode-go": "https://opencode.ai/inference/go/systemone/v1/systemone",
+  opencode: "https://opencode.ai/inference/systemone/v1/systemone",
+} as const;
+export type Provider = keyof typeof ENDPOINTS;
+export interface DecisionModel {
+  provider: Provider;
+  model: string;
+}
+export const DEFAULT_DECISION_MODEL = "opencode-go/jev-1.14";
+
+const isProvider = (id: string): id is Provider => Object.hasOwn(ENDPOINTS, id);
+const BARE_ID_PROVIDER: Provider = "opencode";
+
+export function parseDecisionModel(id: string): DecisionModel {
+  const text = id.trim();
+  const slash = text.indexOf("/");
+  const provider = slash === -1 ? BARE_ID_PROVIDER : text.slice(0, slash);
+  const model = slash === -1 ? text : text.slice(slash + 1);
+  if (!isProvider(provider) || model === "") {
+    throw new Error(
+      `Unknown decision model "${id}": use provider/model, with provider opencode-go or opencode, such as ${DEFAULT_DECISION_MODEL}.`,
+    );
+  }
+  return { provider, model };
+}
+
+/** The provider's key from OpenCode's auth.json, else the other one's: one key works on both endpoints, and billing follows the endpoint. */
+export function apiKeyFor(auth: Record<string, { key?: string | undefined }>, provider: Provider): string | undefined {
+  return auth[provider]?.key ?? auth.opencode?.key ?? auth["opencode-go"]?.key;
+}
 
 export interface RelatedThread {
   id: string;
@@ -70,14 +101,14 @@ export class ModelError extends Error {
     message: string,
     readonly status: number,
     readonly tooLong = false,
+    readonly retryAfterMs: number | null = null,
   ) {
     super(message);
   }
 }
 
-export interface ModelConfig {
+export interface ModelConfig extends DecisionModel {
   apiKey: string;
-  model: string;
 }
 
 /** Both from 0 to 1. */
@@ -99,11 +130,25 @@ const errorSchema = z.union([
   z.object({ detail: z.object({ error_type: z.string() }) }).transform((body) => body.detail.error_type),
 ]);
 
-export async function askVerdict(config: ModelConfig, state: string, signal: AbortSignal): Promise<Verdict> {
-  const response = await fetch(DECISION_ENDPOINT, {
+function retryAfterMs(header: string | null): number | null {
+  return header !== null && /^\d+$/.test(header.trim()) ? Number(header.trim()) * 1000 : null;
+}
+
+/** `onAnswered` runs when the response is 2xx, before its body is read: OpenCode bills every answered request. */
+export async function askVerdict(
+  config: ModelConfig,
+  state: string,
+  signal: AbortSignal,
+  onAnswered: () => void,
+): Promise<Verdict> {
+  const response = await fetch(ENDPOINTS[config.provider], {
     method: "POST",
     signal: AbortSignal.any([signal, AbortSignal.timeout(60_000)]),
-    headers: { "content-type": "application/json", authorization: `Bearer ${config.apiKey}` },
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${config.apiKey}`,
+      "user-agent": "bb-plugin-thread-resolved",
+    },
     body: JSON.stringify({
       model: config.model,
       state,
@@ -113,11 +158,17 @@ export async function askVerdict(config: ModelConfig, state: string, signal: Abo
       },
     }),
   });
+  if (response.ok) onAnswered();
   const body: unknown = await response.json().catch(() => null);
   if (!response.ok) {
     const error = errorSchema.safeParse(body);
     const message = error.success ? error.data : JSON.stringify(body)?.slice(0, 300);
-    throw new ModelError(`${config.model} answered ${response.status}: ${message}`, response.status, message === "max_tokens_exceeded");
+    throw new ModelError(
+      `${config.provider}/${config.model} answered ${response.status}: ${message}`,
+      response.status,
+      message === "max_tokens_exceeded",
+      retryAfterMs(response.headers.get("retry-after")),
+    );
   }
   const { answers } = answerSchema.parse(body);
   const likelihood = (level: number) => answers.progress.probabilities[String(level)] ?? 0;

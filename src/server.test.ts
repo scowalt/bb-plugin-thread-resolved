@@ -37,25 +37,28 @@ const CHILD = "thr_bbbbbbbbbb";
 
 type Listed = ReturnType<typeof makeThreadResponse> & { hasPendingInteraction: boolean; queuedWork: "none" };
 const listed = (id: string, parentThreadId: string | null = null): Listed => ({
-  ...makeThreadResponse({ id, parentThreadId, status: "idle", updatedAt: 1, latestAttentionAt: 1 }),
+  ...makeThreadResponse({ id, parentThreadId, status: "idle", updatedAt: 1, latestAttentionAt: 1, title: id === CHILD ? "Child" : "Parent" }),
   hasPendingInteraction: false,
   queuedWork: "none",
 });
 
 /** THREAD, or THREAD with CHILD under it; tests change the threads in place. */
-async function start(events: object[] = [], withChild = false) {
+async function start(events: object[] = [], withChild = false, settings: Record<string, unknown> = {}) {
   const threads = new Map([[THREAD, listed(THREAD)]]);
   if (withChild) threads.set(CHILD, listed(CHILD, THREAD));
   const thread = threads.get(THREAD)!;
   const { bb, harness } = createFakePluginHost({
     pluginId: "thread-resolved",
-    settings: { apiKey: "test-key" },
+    settings: { apiKey: "test-key", ...settings },
     sdk: {
       threads: {
         list: (args) =>
           args?.archived ? [] : [...threads.values()].filter((t) => args?.threadIds?.includes(t.id) ?? true),
-        experimental_listDescendants: () => ({
-          threads: [{ threadId: THREAD, descendantIds: withChild ? [CHILD] : [] }],
+        experimental_listDescendants: (args) => ({
+          threads: (args?.threadIds ?? []).map((threadId: string) => ({
+            threadId,
+            descendantIds: withChild && threadId === THREAD ? [CHILD] : [],
+          })),
         }),
         events: { list: () => events },
         output: () => ({ output: null }),
@@ -189,7 +192,7 @@ describe("progress", () => {
 
 describe("when a thread is judged again", () => {
   beforeEach(() => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
@@ -222,7 +225,189 @@ describe("when a thread is judged again", () => {
     threads.set(CHILD, { ...child, status: "active", updatedAt: 3 });
     await settle(1);
 
+    await vi.advanceTimersByTimeAsync(15 * 60_000);
     threads.set(CHILD, { ...child, updatedAt: 4, latestAttentionAt: 4 });
     await settle(2);
+  });
+
+  it("asks about a thread again for a related thread's change at most every 15 minutes, and at once for its own turn", async () => {
+    const { harness, thread, threads, judging } = await start([], true);
+    const settle = async (calls: number) => {
+      await harness.emitThreadEvent("thread.idle", { thread: threads.get(THREAD) } as never);
+      await vi.advanceTimersByTimeAsync(3_000);
+      await vi.waitFor(async () => expect(await judging()).toEqual([]));
+      expect(fetch).toHaveBeenCalledTimes(calls);
+    };
+    const child = threads.get(CHILD)!;
+
+    await settle(1);
+
+    threads.set(CHILD, { ...child, latestAttentionAt: 4 });
+    await vi.advanceTimersByTimeAsync(14 * 60_000);
+    await settle(1);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    await settle(2);
+
+    threads.set(CHILD, { ...child, latestAttentionAt: 5 });
+    threads.set(THREAD, { ...thread, latestAttentionAt: 6 });
+    await settle(3);
+  });
+
+  const askedAbout = (title: string) =>
+    vi.mocked(fetch).mock.calls.filter(([, init]) => JSON.parse(String(init?.body)).state.startsWith(`Thread title: ${title}\n`)).length;
+
+  it("does not ask about a child again when only its parent finished a turn", async () => {
+    const { harness, thread, threads, judging } = await start([], true);
+    const child = threads.get(CHILD)!;
+    const settle = async () => {
+      await harness.emitThreadEvent("thread.idle", { thread: threads.get(CHILD) } as never);
+      await vi.advanceTimersByTimeAsync(3_000);
+      await vi.waitFor(async () => expect(await judging()).toEqual([]));
+    };
+
+    await settle();
+    expect(askedAbout("Child")).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(16 * 60_000);
+    threads.set(THREAD, { ...thread, latestAttentionAt: 2 });
+    await settle();
+    expect(askedAbout("Child")).toBe(1);
+
+    threads.set(CHILD, { ...child, latestAttentionAt: 3 });
+    await settle();
+    expect(askedAbout("Child")).toBe(2);
+  });
+});
+
+describe("call limits", () => {
+  const OTHER = "thr_cccccccccc";
+  const answer = () =>
+    Response.json({ answers: { resolved: { type: "noul", noul: 0.2 }, progress: { type: "score", probabilities: { 2: 1 } } } });
+  beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] }));
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  async function finishTurn(
+    harness: Awaited<ReturnType<typeof start>>["harness"],
+    threads: Map<string, Listed>,
+    id: string,
+    attentionAt: number,
+  ) {
+    const next = { ...threads.get(id)!, latestAttentionAt: attentionAt };
+    threads.set(id, next);
+    await harness.emitThreadEvent("thread.idle", { thread: next } as never);
+    await vi.advanceTimersByTimeAsync(3_000);
+  }
+
+  it("asks at most checksPerDay times in 24 hours, and keeps counting across a reload", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => answer()));
+    const { harness, threads } = await start([], false, { checksPerDay: 1 });
+
+    await finishTurn(harness, threads, THREAD, 2);
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    await finishTurn(harness, threads, THREAD, 3);
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    const reloaded = await harness.reload(plugin);
+    await finishTurn(reloaded.harness, threads, THREAD, 4);
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(24 * 60 * 60_000);
+    await finishTurn(reloaded.harness, threads, THREAD, 5);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    [429, "a rate limit"],
+    [402, "no credit left"],
+    [451, "a refusal"],
+    [503, "an outage"],
+  ])("pauses every check for the Retry-After of a %i (%s)", async (status) => {
+    const fetchMock = vi.fn(async () =>
+      Response.json({ error: { message: "slow down" } }, { status, headers: { "retry-after": "120" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { harness, threads } = await start();
+    threads.set(OTHER, listed(OTHER));
+
+    await finishTurn(harness, threads, THREAD, 2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const pausedAt = Date.now();
+    fetchMock.mockImplementation(async () => answer());
+
+    await finishTurn(harness, threads, OTHER, 2);
+    await vi.advanceTimersByTimeAsync(pausedAt + 119_000 - Date.now());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not count refused calls against checksPerDay", async () => {
+    const fetchMock = vi.fn(async () =>
+      Response.json({ error: { message: "unavailable" } }, { status: 503, headers: { "retry-after": "120" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { harness, threads } = await start([], false, { checksPerDay: 1 });
+    threads.set(OTHER, listed(OTHER));
+
+    await finishTurn(harness, threads, THREAD, 2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const refusedAt = Date.now();
+    fetchMock.mockImplementation(async () => answer());
+
+    await finishTurn(harness, threads, OTHER, 2);
+    await vi.advanceTimersByTimeAsync(refusedAt + 120_000 - Date.now());
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    await finishTurn(harness, threads, THREAD, 3);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("decision model", () => {
+  const GO = "https://opencode.ai/inference/go/systemone/v1/systemone";
+  const CONSOLE = "https://opencode.ai/inference/systemone/v1/systemone";
+  afterEach(() => vi.unstubAllGlobals());
+
+  async function requestFor(settings: Record<string, unknown>) {
+    const requests: { url: string; model: string; userAgent: string | null }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: RequestInit) => {
+        requests.push({
+          url,
+          model: JSON.parse(String(init.body)).model,
+          userAgent: new Headers(init.headers).get("user-agent"),
+        });
+        return Response.json({
+          answers: { resolved: { type: "noul", noul: 0.2 }, progress: { type: "score", probabilities: { 2: 1 } } },
+        });
+      }),
+    );
+    const { harness } = await start([], false, settings);
+    const status = await harness.runCli(["check", THREAD, "--json"]);
+    return { requests, status: JSON.parse(status.stdout) };
+  }
+
+  it("asks OpenCode Go's jev-1.14 by default, and names itself", async () => {
+    expect((await requestFor({})).requests).toEqual([{ url: GO, model: "jev-1.14", userAgent: "bb-plugin-thread-resolved" }]);
+  });
+
+  it("asks the Console for an opencode/ model, and for a bare model id", async () => {
+    const free = await requestFor({ decisionModel: "opencode/jev-1.13-free" });
+    expect(free.requests).toMatchObject([{ url: CONSOLE, model: "jev-1.13-free" }]);
+    const bare = await requestFor({ decisionModel: "jev-1.13" });
+    expect(bare.requests).toMatchObject([{ url: CONSOLE, model: "jev-1.13" }]);
+  });
+
+  it("records an unknown provider as the thread's error without calling anyone", async () => {
+    const { requests, status } = await requestFor({ decisionModel: "openai/gpt-6" });
+    expect(requests).toEqual([]);
+    expect(status.error).toContain("use provider/model");
   });
 });

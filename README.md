@@ -31,6 +31,10 @@ bb plugin update thread-resolved   # later releases in the same range
   thread was archived, deleted or started waiting on the person, since the last
   answer. Reading a thread, or a related thread starting a turn, costs no
   model call.
+- **What it skips:** a thread's own turn ending asks again at once. A
+  change in a related thread asks again at most every 15 minutes. A child
+  isn't asked again when its parent finishes a turn: its answer rests on its
+  own work, its children and the threads it mentions, not on its parent.
 - **What the model reads:** the whole thread (user turns, messages from bb and
   other threads, agent replies, commands run, tool calls, files changed; file
   reads and reasoning are left out), capped at 60k characters by cutting the
@@ -61,15 +65,32 @@ bb plugin update thread-resolved   # later releases in the same range
 
 ## Model
 
-Defaults to `jev-1.13-free`, a free decision model on OpenCode's System One
-endpoint (`https://opencode.ai/inference/systemone/v1/systemone`). It answers
-in a few hundred milliseconds. The paid `jev-1.13`, `gpt-6-luna-decision` and
-`gemini-decision-1` take the same request. With no `apiKey` set, the plugin
-reads the key OpenCode saved in `~/.local/share/opencode/auth.json`. Two checks
-run at a time; a 429 pauses all checks for 5 minutes.
+`decisionModel` names the model as `provider/model`, the way OpenCode does. It
+defaults to `opencode-go/jev-1.14`, OpenCode Go's decision model on its System
+One endpoint. Go bills it at list price, $0.042 per 1M input tokens, from the
+monthly allowance every Go model shares. $10 of `jev-1.14` a month uses all of
+it on Go ($40 on Go Plus). With no `apiKey` set, the plugin reads the key
+OpenCode saved in `~/.local/share/opencode/auth.json`.
+
+`checksPerDay` (default 500) caps the calls the model answered in any 24 hours.
+500 a day is about $6.50 a month at list price, about two thirds of that
+allowance on Go. A refused call or a failed request is not counted, since
+OpenCode does not bill it. The count survives a reload. At the cap, checks wait
+until the oldest call is a day old, and the CLI's `check` still runs. Two
+checks run at a time.
+
+Console models take the `opencode/` prefix: `opencode/jev-1.13-free` is free
+with a small daily allowance, shared with anything else that uses OpenCode's
+free models, and `opencode/jev-1.13` bills your pay-as-you-go balance. A bare
+id such as `jev-1.13` names a Console model.
+
+Any refusal from the endpoint except "too long" (a 429, a 402, a 503, and so
+on) pauses all checks, for the provider's `Retry-After` when it gives one and
+5 minutes when it doesn't.
 
 ```sh
-bb plugin config thread-resolved set decisionModel jev-1.13
+bb plugin config thread-resolved set decisionModel opencode/jev-1.13-free
+bb plugin config thread-resolved set checksPerDay 300
 bb plugin config thread-resolved set threshold 0.8
 bb plugin config thread-resolved set lookbackDays 7
 ```
@@ -99,6 +120,9 @@ one JSON confidence per line, without touching stored verdicts:
 ```sh
 bb thread-resolved list --json | jq -r '.[].threadId' | npx tsx scripts/replay.ts
 ```
+
+It uses the configured model. Pass `--model opencode/jev-1.13-free` to try
+another without changing settings.
 
 ## Release
 

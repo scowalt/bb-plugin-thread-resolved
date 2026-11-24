@@ -182,6 +182,7 @@ export default async function plugin(bb: BbPluginApi) {
    */
   function fingerprint(thread: ListedThread, related: Map<string, ListedThread | null>): string {
     const parts = [...related]
+      .filter(([id]) => id !== thread.parentThreadId)
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([id, t]) => `${id}=${t === null ? "deleted" : `${t.latestAttentionAt},${t.archivedAt !== null},${t.hasPendingInteraction}`}`);
     return [PROMPT_VERSION, String(thread.latestAttentionAt), ...parts].join("|");

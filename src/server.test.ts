@@ -37,7 +37,7 @@ const CHILD = "thr_bbbbbbbbbb";
 
 type Listed = ReturnType<typeof makeThreadResponse> & { hasPendingInteraction: boolean; queuedWork: "none" };
 const listed = (id: string, parentThreadId: string | null = null): Listed => ({
-  ...makeThreadResponse({ id, parentThreadId, status: "idle", updatedAt: 1, latestAttentionAt: 1 }),
+  ...makeThreadResponse({ id, parentThreadId, status: "idle", updatedAt: 1, latestAttentionAt: 1, title: id === CHILD ? "Child" : "Parent" }),
   hasPendingInteraction: false,
   queuedWork: "none",
 });
@@ -54,8 +54,11 @@ async function start(events: object[] = [], withChild = false) {
       threads: {
         list: (args) =>
           args?.archived ? [] : [...threads.values()].filter((t) => args?.threadIds?.includes(t.id) ?? true),
-        experimental_listDescendants: () => ({
-          threads: [{ threadId: THREAD, descendantIds: withChild ? [CHILD] : [] }],
+        experimental_listDescendants: (args) => ({
+          threads: (args?.threadIds ?? []).map((threadId: string) => ({
+            threadId,
+            descendantIds: withChild && threadId === THREAD ? [CHILD] : [],
+          })),
         }),
         events: { list: () => events },
         output: () => ({ output: null }),
@@ -224,5 +227,29 @@ describe("when a thread is judged again", () => {
 
     threads.set(CHILD, { ...child, updatedAt: 4, latestAttentionAt: 4 });
     await settle(2);
+  });
+
+  const askedAbout = (title: string) =>
+    vi.mocked(fetch).mock.calls.filter(([, init]) => JSON.parse(String(init?.body)).state.startsWith(`Thread title: ${title}\n`)).length;
+
+  it("does not ask about a child again when only its parent finished a turn", async () => {
+    const { harness, thread, threads, judging } = await start([], true);
+    const child = threads.get(CHILD)!;
+    const settle = async () => {
+      await harness.emitThreadEvent("thread.idle", { thread: threads.get(CHILD) } as never);
+      await vi.advanceTimersByTimeAsync(3_000);
+      await vi.waitFor(async () => expect(await judging()).toEqual([]));
+    };
+
+    await settle();
+    expect(askedAbout("Child")).toBe(1);
+
+    threads.set(THREAD, { ...thread, latestAttentionAt: 2 });
+    await settle();
+    expect(askedAbout("Child")).toBe(1);
+
+    threads.set(CHILD, { ...child, latestAttentionAt: 3 });
+    await settle();
+    expect(askedAbout("Child")).toBe(2);
   });
 });

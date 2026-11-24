@@ -192,7 +192,7 @@ describe("progress", () => {
 
 describe("when a thread is judged again", () => {
   beforeEach(() => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
@@ -225,8 +225,33 @@ describe("when a thread is judged again", () => {
     threads.set(CHILD, { ...child, status: "active", updatedAt: 3 });
     await settle(1);
 
+    await vi.advanceTimersByTimeAsync(15 * 60_000);
     threads.set(CHILD, { ...child, updatedAt: 4, latestAttentionAt: 4 });
     await settle(2);
+  });
+
+  it("asks about a thread again for a related thread's change at most every 15 minutes, and at once for its own turn", async () => {
+    const { harness, thread, threads, judging } = await start([], true);
+    const settle = async (calls: number) => {
+      await harness.emitThreadEvent("thread.idle", { thread: threads.get(THREAD) } as never);
+      await vi.advanceTimersByTimeAsync(3_000);
+      await vi.waitFor(async () => expect(await judging()).toEqual([]));
+      expect(fetch).toHaveBeenCalledTimes(calls);
+    };
+    const child = threads.get(CHILD)!;
+
+    await settle(1);
+
+    threads.set(CHILD, { ...child, latestAttentionAt: 4 });
+    await vi.advanceTimersByTimeAsync(14 * 60_000);
+    await settle(1);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    await settle(2);
+
+    threads.set(CHILD, { ...child, latestAttentionAt: 5 });
+    threads.set(THREAD, { ...thread, latestAttentionAt: 6 });
+    await settle(3);
   });
 
   const askedAbout = (title: string) =>
@@ -244,6 +269,7 @@ describe("when a thread is judged again", () => {
     await settle();
     expect(askedAbout("Child")).toBe(1);
 
+    await vi.advanceTimersByTimeAsync(16 * 60_000);
     threads.set(THREAD, { ...thread, latestAttentionAt: 2 });
     await settle();
     expect(askedAbout("Child")).toBe(1);

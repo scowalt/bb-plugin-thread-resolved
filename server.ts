@@ -31,6 +31,7 @@ const IDLE_SETTLE_MS = 3_000;
 const MAX_PARALLEL_CHECKS = 2;
 const MAX_RELATED = 25;
 const RETRY_AFTER_ERROR_MS = 10 * 60_000;
+const RELATED_RECHECK_MS = 15 * 60_000;
 const PAUSE_AFTER_RATE_LIMIT_MS = 5 * 60_000;
 // The decision model reads at most 32k tokens; a thread too long at one
 // budget is retried at the next.
@@ -185,7 +186,11 @@ export default async function plugin(bb: BbPluginApi) {
       .filter(([id]) => id !== thread.parentThreadId)
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([id, t]) => `${id}=${t === null ? "deleted" : `${t.latestAttentionAt},${t.archivedAt !== null},${t.hasPendingInteraction}`}`);
-    return [PROMPT_VERSION, String(thread.latestAttentionAt), ...parts].join("|");
+    return [ownFingerprint(thread), ...parts].join("|");
+  }
+
+  function ownFingerprint(thread: ListedThread): string {
+    return `${PROMPT_VERSION}|${thread.latestAttentionAt}`;
   }
 
   async function childIds(threadId: string): Promise<string[]> {
@@ -266,6 +271,8 @@ export default async function plugin(bb: BbPluginApi) {
     if (!force && previous) {
       if (previous.fingerprint === cheap) return previous;
       if (previous.error_at !== null && Date.now() - previous.error_at < RETRY_AFTER_ERROR_MS) return previous;
+      const sameTurn = `${previous.fingerprint}|`.startsWith(`${ownFingerprint(thread)}|`);
+      if (sameTurn && Date.now() - previous.checked_at < RELATED_RECHECK_MS) return previous;
     }
     setJudging(threadId, true);
 

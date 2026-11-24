@@ -368,3 +368,46 @@ describe("call limits", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("decision model", () => {
+  const GO = "https://opencode.ai/inference/go/systemone/v1/systemone";
+  const CONSOLE = "https://opencode.ai/inference/systemone/v1/systemone";
+  afterEach(() => vi.unstubAllGlobals());
+
+  async function requestFor(settings: Record<string, unknown>) {
+    const requests: { url: string; model: string; userAgent: string | null }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: RequestInit) => {
+        requests.push({
+          url,
+          model: JSON.parse(String(init.body)).model,
+          userAgent: new Headers(init.headers).get("user-agent"),
+        });
+        return Response.json({
+          answers: { resolved: { type: "noul", noul: 0.2 }, progress: { type: "score", probabilities: { 2: 1 } } },
+        });
+      }),
+    );
+    const { harness } = await start([], false, settings);
+    const status = await harness.runCli(["check", THREAD, "--json"]);
+    return { requests, status: JSON.parse(status.stdout) };
+  }
+
+  it("asks OpenCode Go's jev-1.14 by default, and names itself", async () => {
+    expect((await requestFor({})).requests).toEqual([{ url: GO, model: "jev-1.14", userAgent: "bb-plugin-thread-resolved" }]);
+  });
+
+  it("asks the Console for an opencode/ model, and for a bare model id", async () => {
+    const free = await requestFor({ decisionModel: "opencode/jev-1.13-free" });
+    expect(free.requests).toMatchObject([{ url: CONSOLE, model: "jev-1.13-free" }]);
+    const bare = await requestFor({ decisionModel: "jev-1.13" });
+    expect(bare.requests).toMatchObject([{ url: CONSOLE, model: "jev-1.13" }]);
+  });
+
+  it("records an unknown provider as the thread's error without calling anyone", async () => {
+    const { requests, status } = await requestFor({ decisionModel: "openai/gpt-6" });
+    expect(requests).toEqual([]);
+    expect(status.error).toContain("use provider/model");
+  });
+});

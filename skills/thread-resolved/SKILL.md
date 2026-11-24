@@ -29,5 +29,5 @@ bb thread-resolved check <thread-id> [--json]  # ask the model again now
 ```
 
 Settings (`bb plugin config thread-resolved`): `decisionModel` (default
-`jev-1.13-free`), `threshold` (default 0.7), `apiKey` (empty reads OpenCode's
-saved key), `lookbackDays` (default 3).
+`opencode-go/jev-1.14`), `checksPerDay` (default 500), `threshold` (default
+0.7), `apiKey` (empty reads OpenCode's saved key), `lookbackDays` (default 3).

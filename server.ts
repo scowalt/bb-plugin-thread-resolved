@@ -10,9 +10,12 @@ import { z } from "zod";
 import { VERDICTS_CHANGED } from "./src/channels";
 import { rpcContract, type ThreadVerdict } from "./src/contract";
 import {
+  apiKeyFor,
   askVerdict,
   buildState,
+  DEFAULT_DECISION_MODEL,
   ModelError,
+  parseDecisionModel,
   PROMPT_VERSION,
   type ModelConfig,
   type RelatedThread,
@@ -59,8 +62,9 @@ export default async function plugin(bb: BbPluginApi) {
     decisionModel: {
       type: "string",
       label: "Decision model",
-      description: "OpenCode decision model id: jev-1.13-free, jev-1.13, gpt-6-luna-decision or gemini-decision-1.",
-      default: "jev-1.13-free",
+      description:
+        "OpenCode decision model as provider/model: opencode-go/jev-1.14 (your OpenCode Go plan), or a Console model such as opencode/jev-1.13-free (free, limited daily allowance) or opencode/jev-1.13 (pay-as-you-go balance).",
+      default: DEFAULT_DECISION_MODEL,
     },
     threshold: {
       type: "number",
@@ -168,14 +172,15 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   async function modelConfig(): Promise<ModelConfig> {
-    const { decisionModel: model, apiKey } = await settings.get();
-    if (apiKey) return { model, apiKey };
+    const { decisionModel, apiKey } = await settings.get();
+    const model = parseDecisionModel(decisionModel);
+    if (apiKey) return { ...model, apiKey };
     const auth = z
       .record(z.string(), z.object({ key: z.string().optional() }))
       .parse(JSON.parse(await readFile(join(homedir(), ".local/share/opencode/auth.json"), "utf8")));
-    const key = auth.opencode?.key ?? auth["opencode-go"]?.key;
+    const key = apiKeyFor(auth, model.provider);
     if (!key) throw new Error("No API key: set apiKey, or log in to OpenCode with `opencode auth login`.");
-    return { model, apiKey: key };
+    return { ...model, apiKey: key };
   }
 
   let warnedSinceLastCall = false;

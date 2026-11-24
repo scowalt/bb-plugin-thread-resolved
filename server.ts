@@ -33,6 +33,7 @@ const MAX_RELATED = 25;
 const RETRY_AFTER_ERROR_MS = 10 * 60_000;
 const RELATED_RECHECK_MS = 15 * 60_000;
 const PAUSE_AFTER_RATE_LIMIT_MS = 5 * 60_000;
+const DAY_MS = 24 * 60 * 60_000;
 // The decision model reads at most 32k tokens; a thread too long at one
 // budget is retried at the next.
 const TRANSCRIPT_BUDGETS = [60_000, 30_000, 15_000];
@@ -74,6 +75,14 @@ export default async function plugin(bb: BbPluginApi) {
       description: "Leave empty to use the key OpenCode saved in ~/.local/share/opencode/auth.json.",
       secret: true,
     },
+    checksPerDay: {
+      type: "number",
+      label: "Model calls per day",
+      description:
+        "At most this many answered model calls in any 24 hours. 500 a day is about $6.50 a month of jev-1.14 at list price, about two thirds of an OpenCode Go plan's monthly allowance, which every Go model shares.",
+      experimental_schema: z.number().int().min(1).max(100_000),
+      default: 500,
+    },
     lookbackDays: {
       type: "number",
       label: "Check threads active in the last N days",
@@ -106,6 +115,8 @@ export default async function plugin(bb: BbPluginApi) {
     )`,
     "ALTER TABLE verdicts ADD COLUMN progress REAL",
     "UPDATE verdicts SET confidence = NULL, fingerprint = '' WHERE progress IS NULL",
+    "CREATE TABLE model_calls (called_at INTEGER NOT NULL)",
+    "CREATE INDEX model_calls_called_at ON model_calls (called_at)",
   ]);
   const getRow = db.prepare<[string], VerdictRow>("SELECT * FROM verdicts WHERE thread_id = ?");
   const upsertRow = db.prepare(
@@ -124,6 +135,13 @@ export default async function plugin(bb: BbPluginApi) {
   );
   const deleteRow = db.prepare("DELETE FROM verdicts WHERE thread_id = ?");
   const listJudged = db.prepare<[], VerdictRow>("SELECT * FROM verdicts WHERE confidence IS NOT NULL");
+
+  const insertCall = db.prepare("INSERT INTO model_calls (called_at) VALUES (?)");
+  const deleteOldCalls = db.prepare("DELETE FROM model_calls WHERE called_at <= ?");
+  const countCalls = db.prepare<[number], { n: number }>("SELECT COUNT(*) AS n FROM model_calls WHERE called_at > ?");
+  const nthCall = db.prepare<[number, number], { called_at: number }>(
+    "SELECT called_at FROM model_calls WHERE called_at > ? ORDER BY called_at LIMIT 1 OFFSET ?",
+  );
 
   const changed = () => bb.realtime.publish(VERDICTS_CHANGED, null);
 
@@ -158,6 +176,28 @@ export default async function plugin(bb: BbPluginApi) {
     const key = auth.opencode?.key ?? auth["opencode-go"]?.key;
     if (!key) throw new Error("No API key: set apiKey, or log in to OpenCode with `opencode auth login`.");
     return { model, apiKey: key };
+  }
+
+  let warnedSinceLastCall = false;
+  function recordCall() {
+    const now = Date.now();
+    deleteOldCalls.run(now - DAY_MS);
+    insertCall.run(now);
+    warnedSinceLastCall = false;
+  }
+  async function callCapReached(): Promise<boolean> {
+    const { checksPerDay } = await settings.get();
+    const since = Date.now() - DAY_MS;
+    const used = countCalls.get(since)?.n ?? 0;
+    if (used < checksPerDay) return false;
+    if (!warnedSinceLastCall) {
+      warnedSinceLastCall = true;
+      const frees = nthCall.get(since, used - checksPerDay)?.called_at ?? since;
+      bb.log.warn(
+        `model calls in the last 24 hours reached checksPerDay (${checksPerDay}); asking again from ${new Date(frees + DAY_MS).toISOString()}`,
+      );
+    }
+    return true;
   }
 
   async function listThreads(ids: readonly string[], archived: boolean): Promise<ListedThread[]> {
@@ -233,7 +273,7 @@ export default async function plugin(bb: BbPluginApi) {
     const config = await modelConfig();
     for (const [index, budget] of TRANSCRIPT_BUDGETS.entries()) {
       try {
-        return await askVerdict(config, stateFor(buildTranscript(entries, budget)), signal);
+        return await askVerdict(config, stateFor(buildTranscript(entries, budget)), signal, recordCall);
       } catch (error) {
         if (!(error instanceof ModelError && error.tooLong) || index === TRANSCRIPT_BUDGETS.length - 1) throw error;
       }
@@ -274,6 +314,7 @@ export default async function plugin(bb: BbPluginApi) {
       const sameTurn = `${previous.fingerprint}|`.startsWith(`${ownFingerprint(thread)}|`);
       if (sameTurn && Date.now() - previous.checked_at < RELATED_RECHECK_MS) return previous;
     }
+    if (!force && (await callCapReached())) return previous ?? null;
     setJudging(threadId, true);
 
     const entries = await readEntries(threadId, signal);
@@ -318,7 +359,9 @@ export default async function plugin(bb: BbPluginApi) {
       if (signal.aborted) throw error;
       const message = error instanceof Error ? error.message : String(error);
       recordError.run(threadId, message, Date.now());
-      if (error instanceof ModelError && error.status === 429) pauseUntil(Date.now() + PAUSE_AFTER_RATE_LIMIT_MS);
+      if (error instanceof ModelError && !error.tooLong) {
+        pauseUntil(Date.now() + (error.retryAfterMs ?? PAUSE_AFTER_RATE_LIMIT_MS), error.status);
+      }
       bb.log.warn(`check of ${threadId} failed: ${message}`);
       return getRow.get(threadId) ?? null;
     }
@@ -333,9 +376,9 @@ export default async function plugin(bb: BbPluginApi) {
   bb.onDispose(() => stopping.abort());
 
   let pausedUntil = 0;
-  function pauseUntil(time: number) {
+  function pauseUntil(time: number, status: number) {
     pausedUntil = time;
-    bb.log.warn(`rate limited; pausing checks until ${new Date(time).toISOString()}`);
+    bb.log.warn(`the model answered ${status}; pausing checks until ${new Date(time).toISOString()}`);
     const timer = setTimeout(pump, time - Date.now());
     stopping.signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
   }

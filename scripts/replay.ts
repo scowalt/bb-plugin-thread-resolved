@@ -59,7 +59,7 @@ async function judge(id: string, children: Map<string, string[]>, model: Awaited
     }),
   );
   const state = buildState({ title: thread.title ?? thread.titleFallback ?? "(untitled)", transcript, related });
-  const verdict = await askVerdict(model, state, AbortSignal.timeout(60_000));
+  const verdict = await askVerdict(model, state, AbortSignal.timeout(60_000), () => {});
   return { id, title: thread.title, prompt: PROMPT_VERSION, ...verdict };
 }
 

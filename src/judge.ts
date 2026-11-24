@@ -70,6 +70,7 @@ export class ModelError extends Error {
     message: string,
     readonly status: number,
     readonly tooLong = false,
+    readonly retryAfterMs: number | null = null,
   ) {
     super(message);
   }
@@ -99,7 +100,17 @@ const errorSchema = z.union([
   z.object({ detail: z.object({ error_type: z.string() }) }).transform((body) => body.detail.error_type),
 ]);
 
-export async function askVerdict(config: ModelConfig, state: string, signal: AbortSignal): Promise<Verdict> {
+function retryAfterMs(header: string | null): number | null {
+  return header !== null && /^\d+$/.test(header.trim()) ? Number(header.trim()) * 1000 : null;
+}
+
+/** `onAnswered` runs when the response is 2xx, before its body is read: OpenCode bills every answered request. */
+export async function askVerdict(
+  config: ModelConfig,
+  state: string,
+  signal: AbortSignal,
+  onAnswered: () => void,
+): Promise<Verdict> {
   const response = await fetch(DECISION_ENDPOINT, {
     method: "POST",
     signal: AbortSignal.any([signal, AbortSignal.timeout(60_000)]),
@@ -113,11 +124,17 @@ export async function askVerdict(config: ModelConfig, state: string, signal: Abo
       },
     }),
   });
+  if (response.ok) onAnswered();
   const body: unknown = await response.json().catch(() => null);
   if (!response.ok) {
     const error = errorSchema.safeParse(body);
     const message = error.success ? error.data : JSON.stringify(body)?.slice(0, 300);
-    throw new ModelError(`${config.model} answered ${response.status}: ${message}`, response.status, message === "max_tokens_exceeded");
+    throw new ModelError(
+      `${config.model} answered ${response.status}: ${message}`,
+      response.status,
+      message === "max_tokens_exceeded",
+      retryAfterMs(response.headers.get("retry-after")),
+    );
   }
   const { answers } = answerSchema.parse(body);
   const likelihood = (level: number) => answers.progress.probabilities[String(level)] ?? 0;

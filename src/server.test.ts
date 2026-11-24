@@ -43,13 +43,13 @@ const listed = (id: string, parentThreadId: string | null = null): Listed => ({
 });
 
 /** THREAD, or THREAD with CHILD under it; tests change the threads in place. */
-async function start(events: object[] = [], withChild = false) {
+async function start(events: object[] = [], withChild = false, settings: Record<string, unknown> = {}) {
   const threads = new Map([[THREAD, listed(THREAD)]]);
   if (withChild) threads.set(CHILD, listed(CHILD, THREAD));
   const thread = threads.get(THREAD)!;
   const { bb, harness } = createFakePluginHost({
     pluginId: "thread-resolved",
-    settings: { apiKey: "test-key" },
+    settings: { apiKey: "test-key", ...settings },
     sdk: {
       threads: {
         list: (args) =>
@@ -277,5 +277,94 @@ describe("when a thread is judged again", () => {
     threads.set(CHILD, { ...child, latestAttentionAt: 3 });
     await settle();
     expect(askedAbout("Child")).toBe(2);
+  });
+});
+
+describe("call limits", () => {
+  const OTHER = "thr_cccccccccc";
+  const answer = () =>
+    Response.json({ answers: { resolved: { type: "noul", noul: 0.2 }, progress: { type: "score", probabilities: { 2: 1 } } } });
+  beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] }));
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  async function finishTurn(
+    harness: Awaited<ReturnType<typeof start>>["harness"],
+    threads: Map<string, Listed>,
+    id: string,
+    attentionAt: number,
+  ) {
+    const next = { ...threads.get(id)!, latestAttentionAt: attentionAt };
+    threads.set(id, next);
+    await harness.emitThreadEvent("thread.idle", { thread: next } as never);
+    await vi.advanceTimersByTimeAsync(3_000);
+  }
+
+  it("asks at most checksPerDay times in 24 hours, and keeps counting across a reload", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => answer()));
+    const { harness, threads } = await start([], false, { checksPerDay: 1 });
+
+    await finishTurn(harness, threads, THREAD, 2);
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    await finishTurn(harness, threads, THREAD, 3);
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    const reloaded = await harness.reload(plugin);
+    await finishTurn(reloaded.harness, threads, THREAD, 4);
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(24 * 60 * 60_000);
+    await finishTurn(reloaded.harness, threads, THREAD, 5);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    [429, "a rate limit"],
+    [402, "no credit left"],
+    [451, "a refusal"],
+    [503, "an outage"],
+  ])("pauses every check for the Retry-After of a %i (%s)", async (status) => {
+    const fetchMock = vi.fn(async () =>
+      Response.json({ error: { message: "slow down" } }, { status, headers: { "retry-after": "120" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { harness, threads } = await start();
+    threads.set(OTHER, listed(OTHER));
+
+    await finishTurn(harness, threads, THREAD, 2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const pausedAt = Date.now();
+    fetchMock.mockImplementation(async () => answer());
+
+    await finishTurn(harness, threads, OTHER, 2);
+    await vi.advanceTimersByTimeAsync(pausedAt + 119_000 - Date.now());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not count refused calls against checksPerDay", async () => {
+    const fetchMock = vi.fn(async () =>
+      Response.json({ error: { message: "unavailable" } }, { status: 503, headers: { "retry-after": "120" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { harness, threads } = await start([], false, { checksPerDay: 1 });
+    threads.set(OTHER, listed(OTHER));
+
+    await finishTurn(harness, threads, THREAD, 2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const refusedAt = Date.now();
+    fetchMock.mockImplementation(async () => answer());
+
+    await finishTurn(harness, threads, OTHER, 2);
+    await vi.advanceTimersByTimeAsync(refusedAt + 120_000 - Date.now());
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    await finishTurn(harness, threads, THREAD, 3);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

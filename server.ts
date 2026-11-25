@@ -225,10 +225,11 @@ export default async function plugin(bb: BbPluginApi) {
    * updatedAt also moves when the person reads the thread. A related thread
    * starting a turn changes nothing here; its turn ending does, so a parent is
    * judged once per child turn, with the child's finished work in view.
+   * Ancestors are left out, even when the thread mentions them.
    */
-  function fingerprint(thread: ListedThread, related: Map<string, ListedThread | null>): string {
+  function fingerprint(thread: ListedThread, related: Map<string, ListedThread | null>, ancestors: readonly string[]): string {
     const parts = [...related]
-      .filter(([id]) => id !== thread.parentThreadId)
+      .filter(([id]) => !ancestors.includes(id))
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([id, t]) => `${id}=${t === null ? "deleted" : `${t.latestAttentionAt},${t.archivedAt !== null},${t.hasPendingInteraction}`}`);
     return [ownFingerprint(thread), ...parts].join("|");
@@ -236,6 +237,17 @@ export default async function plugin(bb: BbPluginApi) {
 
   function ownFingerprint(thread: ListedThread): string {
     return `${PROMPT_VERSION}|${thread.latestAttentionAt}`;
+  }
+
+  async function ancestorIds(thread: ListedThread): Promise<string[]> {
+    const ids: string[] = [];
+    let parentId = thread.parentThreadId;
+    while (parentId !== null && !ids.includes(parentId) && ids.length < MAX_RELATED) {
+      ids.push(parentId);
+      const [parent] = [...(await listThreads([parentId], false)), ...(await listThreads([parentId], true))];
+      parentId = parent?.parentThreadId ?? null;
+    }
+    return ids;
   }
 
   async function childIds(threadId: string): Promise<string[]> {
@@ -309,9 +321,11 @@ export default async function plugin(bb: BbPluginApi) {
     const children = await childIds(threadId);
     const previousMentions = z.array(z.string()).catch([]).parse(JSON.parse(previous?.mentioned_ids ?? "[]"));
     const parent = thread.parentThreadId === null ? [] : [thread.parentThreadId];
+    const ancestors = await ancestorIds(thread);
     const cheap = fingerprint(
       thread,
       await relatedStates([...new Set([...parent, ...children, ...previousMentions])].slice(0, MAX_RELATED)),
+      ancestors,
     );
     if (!force && previous) {
       if (previous.fingerprint === cheap) return previous;
@@ -349,7 +363,7 @@ export default async function plugin(bb: BbPluginApi) {
       );
       upsertRow.run({
         thread_id: threadId,
-        fingerprint: fingerprint(thread, states),
+        fingerprint: fingerprint(thread, states, ancestors),
         confidence,
         progress,
         checked_at: Date.now(),

@@ -31,15 +31,15 @@ bb plugin update thread-resolved   # later releases in the same range
   thread was archived, deleted or started waiting on the person, since the last
   answer. Reading a thread, or a related thread starting a turn, costs no
   model call.
-- **What it skips:** a thread's own turn ending asks again at once. A
-  change in a related thread asks again at most every 15 minutes. A child
-  isn't asked again when its parent, or any thread above it, finishes a turn,
-  even one it mentions: its answer rests on its own work, its children and the
-  other threads it mentions, not on the threads that started it.
+- **What it skips:** subagent threads, the ones another thread started. Their
+  work is their parent's to finish, so they never get a check or a ring, and
+  their parent's verdict reads their state and last reply instead. A thread's
+  own turn ending asks again at once. A change in a related thread asks again
+  at most every 15 minutes.
 - **What the model reads:** the whole thread (user turns, messages from bb and
   other threads, agent replies, commands run, tool calls, files changed; file
   reads and reasoning are left out), capped at 60k characters by cutting the
-  middle. A thread the model finds too long is asked again at 30k, then 15k. It also gets the parent thread, each child thread and each thread the transcript
+  middle. A thread the model finds too long is asked again at 30k, then 15k. It also gets each child thread and each thread the transcript
   mentions, with its state (running, idle, archived) and the end of its last
   reply.
 - **When it shows nothing:** while the thread works, waits on you, has queued
@@ -50,8 +50,6 @@ bb plugin update thread-resolved   # later releases in the same range
   tracked elsewhere or dropped. A change is done only once it is in production (merged and
   deployed, released, published or installed) and someone checked it works
   there. Written, tested, committed, pushed or in a pull request is not done.
-  A thread another thread started for one part of a task is done once it
-  reports back; shipping is the starting thread's job.
 - **How much is done:** the model weighs four levels: none of it done, some of
   it done, most of it done with one final step left (shipping, checking, a
   decision, or action items for you), and all of it done. The ring shows the

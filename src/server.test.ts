@@ -257,46 +257,16 @@ describe("when a thread is judged again", () => {
   const askedAbout = (title: string) =>
     vi.mocked(fetch).mock.calls.filter(([, init]) => JSON.parse(String(init?.body)).state.startsWith(`Thread title: ${title}\n`)).length;
 
-  it("does not ask about a child again when only its parent finished a turn", async () => {
-    const { harness, thread, threads, judging } = await start([], true);
-    const child = threads.get(CHILD)!;
-    const settle = async () => {
-      await harness.emitThreadEvent("thread.idle", { thread: threads.get(CHILD) } as never);
-      await vi.advanceTimersByTimeAsync(3_000);
-      await vi.waitFor(async () => expect(await judging()).toEqual([]));
-    };
+  it("never asks about a subagent thread, and asks its parent once the subagent's turn ends", async () => {
+    const { harness, threads, judging } = await start([], true);
+    await harness.emitThreadEvent("thread.idle", { thread: threads.get(CHILD) } as never);
+    expect(await judging()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(3_000);
+    await vi.waitFor(() => expect(askedAbout("Parent")).toBe(1));
 
-    await settle();
-    expect(askedAbout("Child")).toBe(1);
-
-    await vi.advanceTimersByTimeAsync(16 * 60_000);
-    threads.set(THREAD, { ...thread, latestAttentionAt: 2 });
-    await settle();
-    expect(askedAbout("Child")).toBe(1);
-
-    threads.set(CHILD, { ...child, latestAttentionAt: 3 });
-    await settle();
-    expect(askedAbout("Child")).toBe(2);
-  });
-
-  it("does not ask about a grandchild again when only the grandparent it mentions finished a turn", async () => {
-    const GRANDCHILD = "thr_cccccccccc";
-    const mention = { type: "item/completed", seq: 1, data: { item: { type: "agentMessage", text: `Reporting to ${THREAD}.` } } };
-    const { harness, thread, threads, judging } = await start([mention], true);
-    threads.set(GRANDCHILD, { ...listed(GRANDCHILD, CHILD), title: "Grandchild" });
-    const settle = async () => {
-      await harness.emitThreadEvent("thread.idle", { thread: threads.get(GRANDCHILD) } as never);
-      await vi.advanceTimersByTimeAsync(3_000);
-      await vi.waitFor(async () => expect(await judging()).toEqual([]));
-    };
-
-    await settle();
-    expect(askedAbout("Grandchild")).toBe(1);
-
-    await vi.advanceTimersByTimeAsync(16 * 60_000);
-    threads.set(THREAD, { ...thread, latestAttentionAt: 2 });
-    await settle();
-    expect(askedAbout("Grandchild")).toBe(1);
+    await harness.runCli(["check", CHILD]);
+    expect(askedAbout("Child")).toBe(0);
+    expect(fetch).toHaveBeenCalledOnce();
   });
 });
 

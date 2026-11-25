@@ -225,11 +225,9 @@ export default async function plugin(bb: BbPluginApi) {
    * updatedAt also moves when the person reads the thread. A related thread
    * starting a turn changes nothing here; its turn ending does, so a parent is
    * judged once per child turn, with the child's finished work in view.
-   * Ancestors are left out, even when the thread mentions them.
    */
-  function fingerprint(thread: ListedThread, related: Map<string, ListedThread | null>, ancestors: readonly string[]): string {
+  function fingerprint(thread: ListedThread, related: Map<string, ListedThread | null>): string {
     const parts = [...related]
-      .filter(([id]) => !ancestors.includes(id))
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([id, t]) => `${id}=${t === null ? "deleted" : `${t.latestAttentionAt},${t.archivedAt !== null},${t.hasPendingInteraction}`}`);
     return [ownFingerprint(thread), ...parts].join("|");
@@ -237,17 +235,6 @@ export default async function plugin(bb: BbPluginApi) {
 
   function ownFingerprint(thread: ListedThread): string {
     return `${PROMPT_VERSION}|${thread.latestAttentionAt}`;
-  }
-
-  async function ancestorIds(thread: ListedThread): Promise<string[]> {
-    const ids: string[] = [];
-    let parentId = thread.parentThreadId;
-    while (parentId !== null && !ids.includes(parentId) && ids.length < MAX_RELATED) {
-      ids.push(parentId);
-      const [parent] = [...(await listThreads([parentId], false)), ...(await listThreads([parentId], true))];
-      parentId = parent?.parentThreadId ?? null;
-    }
-    return ids;
   }
 
   async function childIds(threadId: string): Promise<string[]> {
@@ -309,7 +296,9 @@ export default async function plugin(bb: BbPluginApi) {
 
   async function judge(threadId: string, signal: AbortSignal, force: boolean): Promise<VerdictRow | null> {
     const [thread] = await listThreads([threadId], false);
-    if (!thread || thread.deletedAt !== null) {
+    // A subagent thread's work is its parent's to finish, and the parent's
+    // verdict already reads the subagent's state and last reply.
+    if (!thread || thread.deletedAt !== null || thread.parentThreadId !== null) {
       forgetThread(threadId);
       return null;
     }
@@ -320,12 +309,9 @@ export default async function plugin(bb: BbPluginApi) {
     const previous = getRow.get(threadId);
     const children = await childIds(threadId);
     const previousMentions = z.array(z.string()).catch([]).parse(JSON.parse(previous?.mentioned_ids ?? "[]"));
-    const parent = thread.parentThreadId === null ? [] : [thread.parentThreadId];
-    const ancestors = await ancestorIds(thread);
     const cheap = fingerprint(
       thread,
-      await relatedStates([...new Set([...parent, ...children, ...previousMentions])].slice(0, MAX_RELATED)),
-      ancestors,
+      await relatedStates([...new Set([...children, ...previousMentions])].slice(0, MAX_RELATED)),
     );
     if (!force && previous) {
       if (previous.fingerprint === cheap) return previous;
@@ -337,8 +323,8 @@ export default async function plugin(bb: BbPluginApi) {
     setJudging(threadId, true);
 
     const entries = await readEntries(threadId, signal);
-    const mentions = mentionedThreadIds(buildTranscript(entries, TRANSCRIPT_BUDGETS[0]!), threadId).filter((id) => !children.includes(id) && !parent.includes(id));
-    const relatedIds = [...parent, ...children, ...mentions].slice(0, MAX_RELATED);
+    const mentions = mentionedThreadIds(buildTranscript(entries, TRANSCRIPT_BUDGETS[0]!), threadId).filter((id) => !children.includes(id));
+    const relatedIds = [...children, ...mentions].slice(0, MAX_RELATED);
     const states = await relatedStates(relatedIds);
     const related: RelatedThread[] = await Promise.all(
       relatedIds.map(async (id) => {
@@ -346,7 +332,7 @@ export default async function plugin(bb: BbPluginApi) {
         const output = other ? (await bb.sdk.threads.output({ threadId: id, signal })).output : null;
         return {
           id,
-          relation: parent.includes(id) ? "parent" : children.includes(id) ? "child" : "mentioned",
+          relation: children.includes(id) ? "child" : "mentioned",
           title: other?.title ?? other?.titleFallback ?? "(unknown)",
           state: stateOf(other),
           lastOutput: output ? output.replace(/\s+/g, " ").slice(-600) : null,
@@ -363,7 +349,7 @@ export default async function plugin(bb: BbPluginApi) {
       );
       upsertRow.run({
         thread_id: threadId,
-        fingerprint: fingerprint(thread, states, ancestors),
+        fingerprint: fingerprint(thread, states),
         confidence,
         progress,
         checked_at: Date.now(),
@@ -434,9 +420,9 @@ export default async function plugin(bb: BbPluginApi) {
   bb.events.on("thread.failed", ({ thread }) => clearVerdict(thread.id));
   bb.events.on("interaction.pending", ({ thread }) => clearVerdict(thread.id));
   bb.events.on("thread.idle", ({ thread }) => {
+    if (thread.parentThreadId !== null) return enqueue(thread.parentThreadId, { delayMs: IDLE_SETTLE_MS });
     setJudging(thread.id, true);
     enqueue(thread.id, { delayMs: IDLE_SETTLE_MS });
-    enqueue(thread.parentThreadId, { delayMs: IDLE_SETTLE_MS });
   });
   bb.events.on("thread.archived", ({ thread }) => {
     forgetThread(thread.id);
@@ -459,7 +445,8 @@ export default async function plugin(bb: BbPluginApi) {
           for (let offset = 0; ; offset += 200) {
             const page = await bb.sdk.threads.list({ limit: 200, offset, signal });
             for (const thread of page) {
-              if (thread.updatedAt >= since && thread.visibility === "visible") enqueue(thread.id, { urgent: false });
+              if (thread.parentThreadId !== null) forgetThread(thread.id);
+              else if (thread.updatedAt >= since && thread.visibility === "visible") enqueue(thread.id, { urgent: false });
             }
             if (page.length < 200) break;
           }

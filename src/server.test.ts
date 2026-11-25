@@ -278,6 +278,26 @@ describe("when a thread is judged again", () => {
     await settle();
     expect(askedAbout("Child")).toBe(2);
   });
+
+  it("does not ask about a grandchild again when only the grandparent it mentions finished a turn", async () => {
+    const GRANDCHILD = "thr_cccccccccc";
+    const mention = { type: "item/completed", seq: 1, data: { item: { type: "agentMessage", text: `Reporting to ${THREAD}.` } } };
+    const { harness, thread, threads, judging } = await start([mention], true);
+    threads.set(GRANDCHILD, { ...listed(GRANDCHILD, CHILD), title: "Grandchild" });
+    const settle = async () => {
+      await harness.emitThreadEvent("thread.idle", { thread: threads.get(GRANDCHILD) } as never);
+      await vi.advanceTimersByTimeAsync(3_000);
+      await vi.waitFor(async () => expect(await judging()).toEqual([]));
+    };
+
+    await settle();
+    expect(askedAbout("Grandchild")).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(16 * 60_000);
+    threads.set(THREAD, { ...thread, latestAttentionAt: 2 });
+    await settle();
+    expect(askedAbout("Grandchild")).toBe(1);
+  });
 });
 
 describe("call limits", () => {

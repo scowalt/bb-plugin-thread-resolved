@@ -33,8 +33,9 @@ bb plugin update thread-resolved   # later releases in the same range
   model call.
 - **What it skips:** a thread's own turn ending asks again at once. A
   change in a related thread asks again at most every 15 minutes. A child
-  isn't asked again when its parent finishes a turn: its answer rests on its
-  own work, its children and the threads it mentions, not on its parent.
+  isn't asked again when its parent, or any thread above it, finishes a turn,
+  even one it mentions: its answer rests on its own work, its children and the
+  other threads it mentions, not on the threads that started it.
 - **What the model reads:** the whole thread (user turns, messages from bb and
   other threads, agent replies, commands run, tool calls, files changed; file
   reads and reasoning are left out), capped at 60k characters by cutting the
